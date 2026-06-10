@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from services.github_distribution import GitHubDistributionPublisher
 from services.github_sync import GitHubDatasetClient
 from services.health import HealthChecker, is_ready_status
 from services.history import HistoryStore
+from services.connection_verifier import verify_proxy_connection
+from services.service_state import ServiceStateStore
 from services.settings import SettingsStore
 from services.traffic import TrafficMonitor
 from services.updater import UpdateManager
@@ -67,9 +70,19 @@ class AppBridge(QObject):
         self._progress_detail = ""
         self._current_server = "Disconnected"
         self._current_config_id = ""
+        self._connection_state = "Disconnected"
         self._connection_mode = "disconnected"
         self._proxy_status = "disabled"
         self._vpn_status = "disabled"
+        self._diagnostics = {
+            "dns_status": "Unknown",
+            "tls_status": "Unknown",
+            "route_status": "Unknown",
+            "outbound_status": "Unknown",
+            "last_error": "",
+            "connection_status": "Disconnected",
+        }
+        self.service_state = ServiceStateStore(root)
         self._traffic_snapshot = self.traffic.snapshot()
         self._sync_status = {
             "status": "idle",
@@ -139,6 +152,10 @@ class AppBridge(QObject):
         return self._connection_mode
 
     @Property(str, notify=connectionModeChanged)
+    def connectionStatus(self) -> str:
+        return self._connection_state
+
+    @Property(str, notify=connectionModeChanged)
     def proxyStatus(self) -> str:
         return self._proxy_status
 
@@ -164,6 +181,12 @@ class AppBridge(QObject):
     def _set_connection_mode(self, value: str) -> None:
         if self._connection_mode != value:
             self._connection_mode = value
+            self.connectionModeChanged.emit()
+
+    def _set_connection_state(self, value: str) -> None:
+        if self._connection_state != value:
+            self._connection_state = value
+            self._diagnostics["connection_status"] = value
             self.connectionModeChanged.emit()
 
     def _sample_traffic(self) -> None:
@@ -212,7 +235,9 @@ class AppBridge(QObject):
     @Slot(result="QVariantList")
     def configList(self) -> list[dict]:
         items: list[dict] = []
-        for config in self.db.list_configs(limit=120):
+        configs = [config for config in self.db.list_configs(limit=1000) if is_ready_status(config.status.value)]
+        configs.sort(key=_smart_rank_key)
+        for config in configs[:120]:
             data = config.model_dump(mode="json", exclude={"raw"})
             data["ready"] = is_ready_status(data["status"])
             data["quality"] = _quality_label(float(data.get("score", 0)))
@@ -222,7 +247,9 @@ class AppBridge(QObject):
     @Slot(result="QVariantList")
     def favoriteList(self) -> list[dict]:
         items: list[dict] = []
-        for config in self.db.list_configs(limit=500):
+        configs = [config for config in self.db.list_configs(limit=1000) if config.favorite and is_ready_status(config.status.value)]
+        configs.sort(key=_smart_rank_key)
+        for config in configs:
             if config.favorite:
                 data = config.model_dump(mode="json", exclude={"raw"})
                 data["ready"] = is_ready_status(data["status"])
@@ -276,6 +303,27 @@ class AppBridge(QObject):
     @Slot(result="QVariantMap")
     def updateStatus(self) -> dict:
         return dict(self._update_status)
+
+    @Slot(result="QVariantMap")
+    def serviceStatus(self) -> dict:
+        return self.service_state.read()
+
+    @Slot(result="QVariantMap")
+    def diagnosticsStatus(self) -> dict:
+        service = self.service_state.read()
+        core = self.core.status()
+        return {
+            **self._diagnostics,
+            "service_status": service.get("status", "Stopped"),
+            "service_last_error": service.get("last_error", ""),
+            "service_last_sync": service.get("last_sync", ""),
+            "service_last_health_check": service.get("last_health_check", ""),
+            "core_running": core.get("running", False),
+            "core_version": core.get("version", "Unknown"),
+            "core_memory": core.get("memoryText", "0 B"),
+            "proxy_status": self._proxy_status,
+            "vpn_status": self._vpn_status,
+        }
 
     @Slot(str)
     def addSource(self, url: str) -> None:
@@ -645,6 +693,7 @@ class AppBridge(QObject):
         data["currentNode"] = self._current_server
         data["connected"] = 0 if self._current_server == "Disconnected" else 1
         data["connectionMode"] = self._connection_mode
+        data["connectionStatus"] = self._connection_state
         data["monthlyUsage"] = self._traffic_snapshot.get("monthlyUsageText", "0 B")
         data["uploadSpeed"] = self._traffic_snapshot.get("uploadSpeedText", "0 B/s")
         data["downloadSpeed"] = self._traffic_snapshot.get("downloadSpeedText", "0 B/s")
@@ -662,6 +711,7 @@ class AppBridge(QObject):
         if not is_ready_status(config.status.value):
             self.notification.emit("This node is not Ready yet. Run validation or retest it first.")
             return
+        self._set_connection_state("Connecting")
         try:
             config_path = export_xray_config(
                 config,
@@ -675,23 +725,42 @@ class AppBridge(QObject):
         self._set_busy(True)
         self._start_progress(f"Connecting {mode.upper()}", 0, config.name)
         self._current_config_id = config.id
-        future = self.runner.submit(self.core.start(config_path))
+        http_port = int(self.settings.get("http_port", 10809))
+
+        async def start_and_verify() -> dict:
+            message = await self.core.start(config_path)
+            if "started" not in message.lower():
+                return {"message": message, "verification": {"status": "Failed", "last_error": message}}
+            self._set_connection_state("Verifying")
+            verification = await verify_proxy_connection(http_port, timeout=float(self.settings.get("validation_timeout", 8)))
+            return {"message": message, "verification": verification}
+
+        future = self.runner.submit(start_and_verify())
 
         def done(_future) -> None:
             try:
-                message = _future.result()
+                result = _future.result()
+                message = result.get("message", "")
+                verification = result.get("verification", {})
+                self._diagnostics.update(verification)
                 self.notification.emit(message)
-                if "started" in message.lower():
+                if "started" in message.lower() and verification.get("status") == "Connected":
                     self._set_current_server(config.name)
                     self._set_connection_mode(mode)
+                    self._set_connection_state("Connected")
                     self._proxy_status = "enabled" if mode in {"proxy", "smart"} else self._proxy_status
                     self.connectionModeChanged.emit()
                     self.traffic.start_session()
                     self.history.add("connect", {"mode": mode, "config_id": config.id, "name": config.name, "protocol": config.protocol})
+                    self.notification.emit(f"Connected and verified: {config.name}")
                 else:
+                    self._set_connection_state("Failed")
                     self._set_current_server("Disconnected")
+                    self.history.add("connect_failed", {"mode": mode, "config_id": config.id, "name": config.name, "error": verification.get("last_error", message)})
                 self._finish_progress(message)
             except Exception as exc:
+                self._set_connection_state("Failed")
+                self._diagnostics["last_error"] = str(exc)
                 self.notification.emit(f"Connect failed: {exc}")
             finally:
                 self._set_busy(False)
@@ -727,12 +796,13 @@ class AppBridge(QObject):
         if not ready:
             self.notification.emit("No Ready node found. Start Live Validate first.")
             return
-        ready.sort(key=lambda item: (-item.score, item.ping_ms if item.ping_ms is not None else 999999))
+        ready.sort(key=_smart_rank_key)
         self._connect_config(ready[0].id, "smart")
 
     @Slot()
     def disconnect(self) -> None:
         self._set_busy(True)
+        self._set_connection_state("Disconnecting")
         self._start_progress("Disconnecting", 0, self._current_server)
         future = self.runner.submit(self.core.stop())
 
@@ -741,6 +811,7 @@ class AppBridge(QObject):
                 self.notification.emit(_future.result())
                 self._set_current_server("Disconnected")
                 self._set_connection_mode("disconnected")
+                self._set_connection_state("Disconnected")
                 self._proxy_status = "disabled"
                 self.traffic.stop_session()
                 if self._current_config_id:
@@ -758,6 +829,7 @@ class AppBridge(QObject):
         if not self._current_config_id:
             self.notification.emit("No active config to reconnect.")
             return
+        self._set_connection_state("Reconnecting")
         self.connectConfig(self._current_config_id)
 
     @Slot(str)
@@ -808,6 +880,60 @@ class AppBridge(QObject):
         result = publisher.publish(publisher.auto_message(total_records))
         self.notification.emit(result.splitlines()[-1] if result else "Publish completed.")
 
+    @Slot(str)
+    def serviceControl(self, action: str) -> None:
+        if action not in {"install", "start", "stop", "restart", "status", "remove", "run-once"}:
+            self.notification.emit("Unknown service action.")
+            return
+        script = self.root / "scripts" / "service_control.ps1"
+        if not script.exists():
+            self.notification.emit("Service control script not found.")
+            return
+        self._set_busy(True)
+        self._start_progress(f"Service {action}", 0, "Windows background service")
+
+        def run_command() -> str:
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                    "-Action",
+                    action,
+                ],
+                cwd=str(self.root),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
+            output = (completed.stdout + completed.stderr).strip()
+            if completed.returncode != 0:
+                raise RuntimeError(output or f"Service {action} failed")
+            return output or f"Service {action} complete."
+
+        async def run_command_async() -> str:
+            return await asyncio.to_thread(run_command)
+
+        future = self.runner.submit(run_command_async())
+
+        def done(_future) -> None:
+            try:
+                output = _future.result()
+                self.notification.emit(output.splitlines()[-1] if output else f"Service {action} complete.")
+                self._finish_progress("Service command finished")
+            except Exception as exc:
+                self._diagnostics["last_error"] = str(exc)
+                self.notification.emit(f"Service {action} failed: {exc}")
+            finally:
+                self._set_busy(False)
+                self.statsChanged.emit()
+
+        future.add_done_callback(done)
+
 
 def _quality_label(score: float) -> str:
     if score >= 85:
@@ -817,3 +943,10 @@ def _quality_label(score: float) -> str:
     if score >= 45:
         return "Average"
     return "Poor"
+
+
+def _smart_rank_key(config) -> tuple:
+    total = config.success_count + config.failure_count
+    success_rate = config.success_count / total if total else 1.0
+    ping = config.ping_ms if config.ping_ms is not None else 999999
+    return (-float(config.score), ping, -success_rate, config.last_check_at or "")

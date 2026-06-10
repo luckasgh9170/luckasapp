@@ -29,40 +29,38 @@ ApplicationWindow {
 
     property bool compact: width < 960
     property bool narrow: width < 760
-    property string currentPage: "Home"
-    property string settingsTab: "General"
+    property string currentPage: "Dashboard"
     property string toast: "Ready"
     property string searchText: ""
     property var configs: []
     property var favorites: []
     property var stats: ({})
     property var traffic: ({ speedPoints: [], daily: [], weekly: [], monthly: [] })
-    property var sources: []
-    property var repositories: []
-    property var history: []
     property var settings: ({})
     property var sync: ({})
     property var update: ({})
-    property var navItems: ["Home", "Scan", "Servers", "Favorites", "Statistics", "History", "Settings"]
-    property var settingTabs: ["General", "Synchronization", "Performance", "Notifications", "Advanced"]
+    property var service: ({})
+    property var diagnostics: ({})
+    property var navItems: ["Dashboard", "Nodes", "Quick Connect", "Statistics", "Settings"]
 
     function reloadAll() {
         configs = appBridge.configList()
         favorites = appBridge.favoriteList()
         stats = appBridge.stats()
         traffic = appBridge.trafficStats()
-        sources = appBridge.sourceList()
-        repositories = appBridge.repositoryList()
-        history = appBridge.historyList()
         settings = appBridge.appSettings()
         sync = appBridge.syncStatus()
         update = appBridge.updateStatus()
+        service = appBridge.serviceStatus()
+        diagnostics = appBridge.diagnosticsStatus()
         applyTheme(settings.theme || "dark")
     }
 
     function refreshLive() {
         stats = appBridge.stats()
         traffic = appBridge.trafficStats()
+        service = appBridge.serviceStatus()
+        diagnostics = appBridge.diagnosticsStatus()
     }
 
     function filtered(list) {
@@ -75,8 +73,31 @@ ApplicationWindow {
                 || (item.host || "").toLowerCase().indexOf(text) >= 0
                 || (item.protocol || "").toLowerCase().indexOf(text) >= 0
                 || (item.country || "").toLowerCase().indexOf(text) >= 0
-                || (item.status || "").toLowerCase().indexOf(text) >= 0
         })
+    }
+
+    function bestNode() {
+        return configs && configs.length ? configs[0] : ({})
+    }
+
+    function bestLatency() {
+        var node = bestNode()
+        return node.ping_ms ? node.ping_ms + " ms" : "--"
+    }
+
+    function quickActionText() {
+        if (appBridge.connectionStatus === "Connecting" || appBridge.connectionStatus === "Verifying" || appBridge.connectionStatus === "Reconnecting")
+            return appBridge.connectionStatus
+        if (appBridge.connectionStatus === "Connected")
+            return "Disconnect"
+        return "Connect"
+    }
+
+    function quickAction() {
+        if (appBridge.connectionStatus === "Connected")
+            appBridge.disconnect()
+        else
+            appBridge.smartConnect()
     }
 
     function applyTheme(mode) {
@@ -104,35 +125,6 @@ ApplicationWindow {
         appBridge.setSetting("theme", mode)
     }
 
-    function connectionLabel() {
-        if (appBridge.connectionMode === "disconnected")
-            return "Disconnected"
-        return "Connected"
-    }
-
-    function quickActionText() {
-        if (appBridge.busy && appBridge.connectionMode === "disconnected")
-            return "Connecting"
-        if (appBridge.connectionMode !== "disconnected")
-            return "Disconnect"
-        return "Quick Connect"
-    }
-
-    function quickAction() {
-        if (appBridge.connectionMode !== "disconnected")
-            appBridge.disconnect()
-        else
-            appBridge.smartConnect()
-    }
-
-    function lastUpdateText() {
-        if (sync.updated)
-            return sync.updated
-        if (update.remote_version)
-            return update.remote_version
-        return "Not synced"
-    }
-
     Component.onCompleted: reloadAll()
 
     Timer {
@@ -145,15 +137,14 @@ ApplicationWindow {
     Connections {
         target: appBridge
         function onConfigsChanged() { configs = appBridge.configList(); favorites = appBridge.favoriteList() }
-        function onSourcesChanged() { sources = appBridge.sourceList(); repositories = appBridge.repositoryList() }
-        function onStatsChanged() { stats = appBridge.stats() }
+        function onStatsChanged() { stats = appBridge.stats(); diagnostics = appBridge.diagnosticsStatus(); service = appBridge.serviceStatus() }
         function onTrafficChanged() { traffic = appBridge.trafficStats() }
         function onSettingsChanged() { settings = appBridge.appSettings(); applyTheme(settings.theme || "dark") }
-        function onSyncChanged() { sync = appBridge.syncStatus() }
+        function onSyncChanged() { sync = appBridge.syncStatus(); configs = appBridge.configList() }
         function onUpdateChanged() { update = appBridge.updateStatus() }
         function onCurrentServerChanged() { stats = appBridge.stats() }
-        function onConnectionModeChanged() { stats = appBridge.stats() }
-        function onNotification(message) { toast = message; history = appBridge.historyList() }
+        function onConnectionModeChanged() { stats = appBridge.stats(); diagnostics = appBridge.diagnosticsStatus() }
+        function onNotification(message) { toast = message }
     }
 
     component AppButton: Button {
@@ -179,28 +170,6 @@ ApplicationWindow {
         }
     }
 
-    component Badge: Rectangle {
-        id: badge
-        property string label: ""
-        property color fill: theme.panel2
-        implicitWidth: Math.max(86, labelText.implicitWidth + 28)
-        height: 32
-        radius: 16
-        color: fill
-        border.color: theme.line
-        Text {
-            id: labelText
-            anchors.centerIn: parent
-            text: badge.label
-            color: theme.text
-            font.pixelSize: 12
-            font.bold: true
-            elide: Text.ElideRight
-            width: parent.width - 14
-            horizontalAlignment: Text.AlignHCenter
-        }
-    }
-
     component InfoLine: RowLayout {
         property string label: ""
         property string value: ""
@@ -210,7 +179,7 @@ ApplicationWindow {
             text: label
             color: theme.muted
             font.pixelSize: 12
-            Layout.preferredWidth: 128
+            Layout.preferredWidth: 132
             elide: Text.ElideRight
         }
         Text {
@@ -246,7 +215,7 @@ ApplicationWindow {
         spacing: 0
 
         Rectangle {
-            Layout.preferredWidth: compact ? 88 : 232
+            Layout.preferredWidth: compact ? 92 : 236
             Layout.fillHeight: true
             color: theme.sidebar
 
@@ -267,18 +236,17 @@ ApplicationWindow {
 
                 Rectangle {
                     Layout.fillWidth: true
-                    height: compact ? 54 : 68
+                    height: compact ? 54 : 72
                     radius: 18
-                    color: appBridge.connectionMode === "disconnected" ? "#231f28" : "#143527"
-                    border.color: appBridge.connectionMode === "disconnected" ? "#3a303c" : "#2d6a52"
-
+                    color: appBridge.connectionStatus === "Connected" ? "#143527" : "#231f28"
+                    border.color: appBridge.connectionStatus === "Connected" ? "#2d6a52" : "#3a303c"
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 10
                         spacing: 2
                         Text {
                             Layout.fillWidth: true
-                            text: connectionLabel()
+                            text: appBridge.connectionStatus
                             color: theme.text
                             font.pixelSize: 13
                             font.bold: true
@@ -307,7 +275,6 @@ ApplicationWindow {
                             radius: 15
                             color: currentPage === modelData ? theme.panel2 : "transparent"
                             border.color: currentPage === modelData ? theme.line : "transparent"
-
                             Text {
                                 anchors.centerIn: parent
                                 width: parent.width - 14
@@ -318,7 +285,6 @@ ApplicationWindow {
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
                             }
-
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
@@ -363,17 +329,16 @@ ApplicationWindow {
                         color: theme.text
                         font.pixelSize: narrow ? 22 : 28
                         font.bold: true
-                        Layout.preferredWidth: narrow ? 128 : 190
+                        Layout.preferredWidth: narrow ? 150 : 230
                         elide: Text.ElideRight
                     }
 
                     TextField {
-                        id: searchBox
                         Layout.fillWidth: true
                         Layout.maximumWidth: compact ? 260 : 460
                         height: 42
                         text: searchText
-                        placeholderText: "Search"
+                        placeholderText: "Search healthy nodes"
                         color: theme.text
                         placeholderTextColor: theme.muted
                         font.pixelSize: 13
@@ -385,24 +350,12 @@ ApplicationWindow {
                         }
                     }
 
-                    Badge {
-                        label: (sync.status || "idle")
-                        fill: sync.status === "complete" ? "#163728" : theme.panel
-                        visible: !narrow
-                    }
-
                     AppButton {
-                        text: "Sync"
-                        fill: theme.panel
-                        Layout.preferredWidth: 76
+                        text: "SCAN"
+                        fill: theme.green
+                        ink: "#07120d"
+                        Layout.preferredWidth: 84
                         onClicked: appBridge.scanUpdates()
-                    }
-
-                    AppButton {
-                        text: "Settings"
-                        fill: theme.panel
-                        Layout.preferredWidth: narrow ? 42 : 96
-                        onClicked: currentPage = "Settings"
                     }
                 }
             }
@@ -488,7 +441,7 @@ ApplicationWindow {
                     Item { Layout.preferredHeight: 2 }
 
                     ColumnLayout {
-                        visible: currentPage === "Home"
+                        visible: currentPage === "Dashboard"
                         Layout.fillWidth: true
                         spacing: 18
 
@@ -497,16 +450,15 @@ ApplicationWindow {
                             columns: narrow ? 2 : 4
                             columnSpacing: 14
                             rowSpacing: 14
-
-                            StatCard { title: "Total Records"; value: String(stats.total || 0); accent: theme.blue }
-                            StatCard { title: "New Records"; value: String(sync.new_records || 0); accent: theme.green }
-                            StatCard { title: "Last Sync"; value: lastUpdateText(); accent: theme.amber }
-                            StatCard { title: "Active Tests"; value: appBridge.validationRunning ? String(stats.testing || 0) : "0"; accent: appBridge.validationRunning ? theme.green : theme.red }
+                            StatCard { title: "Connection Status"; value: appBridge.connectionStatus; accent: appBridge.connectionStatus === "Connected" ? theme.green : theme.red }
+                            StatCard { title: "Current Node"; value: appBridge.currentServer; accent: theme.blue }
+                            StatCard { title: "Latency"; value: bestLatency(); accent: theme.amber }
+                            StatCard { title: "Healthy Nodes"; value: String(configs.length || 0); accent: theme.green }
                         }
 
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: narrow ? 590 : 374
+                            Layout.preferredHeight: narrow ? 610 : 386
                             radius: 24
                             color: theme.panel
                             border.color: theme.line
@@ -526,31 +478,31 @@ ApplicationWindow {
 
                                     Rectangle {
                                         Layout.alignment: Qt.AlignHCenter
-                                        width: narrow ? 206 : 238
+                                        width: narrow ? 206 : 244
                                         height: width
                                         radius: width / 2
-                                        color: appBridge.connectionMode === "disconnected" ? "#182335" : "#143527"
+                                        color: appBridge.connectionStatus === "Connected" ? "#143527" : "#182335"
                                         border.width: 2
-                                        border.color: appBridge.connectionMode === "disconnected" ? theme.blue : theme.green
+                                        border.color: appBridge.connectionStatus === "Connected" ? theme.green : theme.blue
                                         scale: quickMouse.pressed ? 0.98 : (quickMouse.containsMouse ? 1.025 : 1)
                                         Behavior on scale { NumberAnimation { duration: 120 } }
 
                                         ColumnLayout {
                                             anchors.centerIn: parent
-                                            width: parent.width - 42
+                                            width: parent.width - 46
                                             spacing: 8
                                             Text {
                                                 Layout.fillWidth: true
                                                 text: quickActionText()
                                                 color: theme.text
-                                                font.pixelSize: narrow ? 23 : 27
+                                                font.pixelSize: narrow ? 24 : 28
                                                 font.bold: true
                                                 horizontalAlignment: Text.AlignHCenter
                                                 wrapMode: Text.WordWrap
                                             }
                                             Text {
                                                 Layout.fillWidth: true
-                                                text: appBridge.connectionMode === "disconnected" ? "Best ready node" : appBridge.currentServer
+                                                text: appBridge.connectionStatus === "Connected" ? appBridge.currentServer : (bestNode().name || "Best healthy node")
                                                 color: theme.muted
                                                 font.pixelSize: 12
                                                 horizontalAlignment: Text.AlignHCenter
@@ -570,42 +522,81 @@ ApplicationWindow {
                                     RowLayout {
                                         Layout.alignment: Qt.AlignHCenter
                                         spacing: 10
-                                        AppButton {
-                                            text: "SCAN"
-                                            fill: theme.green
-                                            ink: "#07120d"
-                                            Layout.preferredWidth: 136
-                                            onClicked: appBridge.scanUpdates()
-                                        }
-                                        AppButton {
-                                            text: "Refresh"
-                                            fill: theme.panel2
-                                            Layout.preferredWidth: 112
-                                            onClicked: appBridge.refreshConfigs()
-                                        }
+                                        AppButton { text: "Refresh"; Layout.preferredWidth: 110; onClicked: appBridge.scanUpdates() }
+                                        AppButton { text: "Validate"; Layout.preferredWidth: 110; onClicked: appBridge.startValidation() }
                                     }
                                 }
 
                                 SectionPanel {
-                                    title: "Connection Panel"
+                                    title: "Network Statistics"
                                     themePanel: theme.panel2
                                     themeText: theme.text
                                     themeMuted: theme.muted
                                     content: Component {
                                         ColumnLayout {
                                             spacing: 12
-                                            InfoLine { label: "Current Server"; value: appBridge.currentServer }
-                                            InfoLine { label: "Mode"; value: appBridge.connectionMode }
-                                            InfoLine { label: "Upload"; value: traffic.uploadSpeedText || "0 B/s" }
-                                            InfoLine { label: "Download"; value: traffic.downloadSpeedText || "0 B/s" }
-                                            InfoLine { label: "Duration"; value: traffic.durationText || "00:00" }
+                                            InfoLine { label: "Upload Speed"; value: traffic.uploadSpeedText || "0 B/s" }
+                                            InfoLine { label: "Download Speed"; value: traffic.downloadSpeedText || "0 B/s" }
+                                            InfoLine { label: "Session Duration"; value: traffic.durationText || "00:00" }
                                             InfoLine { label: "Session Traffic"; value: traffic.sessionTotalText || "0 B" }
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 10
-                                                AppButton { text: "Proxy"; Layout.fillWidth: true; onClicked: appBridge.enableProxy() }
-                                                AppButton { text: "Disconnect"; Layout.fillWidth: true; fill: theme.red; onClicked: appBridge.disconnect() }
-                                            }
+                                            InfoLine { label: "Backend Sync"; value: service.status || "Stopped" }
+                                            InfoLine { label: "Last Sync"; value: service.last_sync || sync.updated || "Never" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: narrow ? 1 : 2
+                            columnSpacing: 14
+                            rowSpacing: 14
+
+                            SectionPanel {
+                                title: "Proxy Mode"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Status"; value: appBridge.proxyStatus === "enabled" ? "Active" : "Inactive" }
+                                        InfoLine { label: "SOCKS Address"; value: "127.0.0.1" }
+                                        InfoLine { label: "SOCKS Port"; value: String(settings.socks_port || 10808) }
+                                        InfoLine { label: "HTTP Address"; value: "127.0.0.1" }
+                                        InfoLine { label: "HTTP Port"; value: String(settings.http_port || 10809) }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            AppButton { text: "Enable Proxy Mode"; Layout.fillWidth: true; onClicked: appBridge.enableProxy() }
+                                            AppButton { text: "Disable"; Layout.fillWidth: true; fill: theme.red; onClicked: appBridge.disableProxy() }
+                                        }
+                                    }
+                                }
+                            }
+
+                            SectionPanel {
+                                title: "TUN Mode"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "TUN Status"; value: appBridge.vpnStatus }
+                                        InfoLine { label: "DNS Status"; value: diagnostics.dns_status || "Unknown" }
+                                        InfoLine { label: "Route Status"; value: diagnostics.route_status || "Unknown" }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: "TUN mode requires administrator privileges, a supported TUN driver, DNS routing, and route recovery."
+                                            color: theme.muted
+                                            font.pixelSize: 12
+                                            wrapMode: Text.WordWrap
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            AppButton { text: "Enable TUN"; Layout.fillWidth: true; onClicked: appBridge.enableVpn() }
+                                            AppButton { text: "Disable"; Layout.fillWidth: true; fill: theme.red; onClicked: appBridge.disableVpn() }
                                         }
                                     }
                                 }
@@ -614,21 +605,21 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        visible: currentPage === "Servers"
+                        visible: currentPage === "Nodes"
                         Layout.fillWidth: true
                         spacing: 16
 
                         RowLayout {
                             Layout.fillWidth: true
                             Text {
-                                text: filtered(configs).length + " servers"
+                                text: filtered(configs).length + " healthy nodes"
                                 color: theme.muted
                                 font.pixelSize: 13
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
                             }
+                            AppButton { text: "SCAN"; Layout.preferredWidth: 92; onClicked: appBridge.scanUpdates() }
                             AppButton { text: "Validate"; Layout.preferredWidth: 110; onClicked: appBridge.startValidation() }
-                            AppButton { text: "Refresh"; Layout.preferredWidth: 100; onClicked: appBridge.refreshConfigs() }
                         }
 
                         GridLayout {
@@ -636,27 +627,22 @@ ApplicationWindow {
                             columns: root.width < 820 ? 1 : (root.width < 1260 ? 2 : 3)
                             columnSpacing: 14
                             rowSpacing: 14
-
                             Repeater {
                                 model: filtered(configs)
                                 delegate: ConfigCard {
                                     Layout.fillWidth: true
                                     item: modelData
                                     onConnectClicked: appBridge.connectConfig(modelData.id)
-                                    onDisconnectClicked: appBridge.disconnect()
-                                    onTestClicked: appBridge.testConfig(modelData.id)
                                     onCopyClicked: appBridge.copyConfig(modelData.id)
                                     onFavoriteClicked: appBridge.toggleFavorite(modelData.id)
-                                    onExportClicked: appBridge.exportConfig(modelData.id)
                                     onDetailsClicked: appBridge.showDetails(modelData.id)
-                                    onDeleteClicked: appBridge.deleteConfig(modelData.id)
                                 }
                             }
                         }
 
                         SectionPanel {
                             visible: filtered(configs).length === 0
-                            title: "No Servers"
+                            title: "No Healthy Nodes"
                             themePanel: theme.panel
                             themeText: theme.text
                             themeMuted: theme.muted
@@ -665,7 +651,7 @@ ApplicationWindow {
                                     spacing: 12
                                     Text {
                                         Layout.fillWidth: true
-                                        text: "Use Scan or Refresh to import servers."
+                                        text: "The app loads cache immediately. Use SCAN and Validate while the background service keeps checking nodes."
                                         color: theme.muted
                                         font.pixelSize: 13
                                         wrapMode: Text.WordWrap
@@ -677,139 +663,84 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        visible: currentPage === "Scan"
-                        Layout.fillWidth: true
-                        spacing: 16
-
-                        SectionPanel {
-                            title: "Scan"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 14
-                                    GridLayout {
-                                        Layout.fillWidth: true
-                                        columns: narrow ? 1 : 3
-                                        columnSpacing: 10
-                                        rowSpacing: 10
-                                        AppButton { text: "SCAN"; fill: theme.green; ink: "#07120d"; Layout.fillWidth: true; onClicked: appBridge.scanUpdates() }
-                                        AppButton { text: "Refresh"; Layout.fillWidth: true; onClicked: appBridge.refreshConfigs() }
-                                        AppButton { text: appBridge.validationRunning ? "Stop Test" : "Validate"; Layout.fillWidth: true; onClicked: appBridge.validationRunning ? appBridge.stopValidation() : appBridge.startValidation() }
-                                    }
-                                    InfoLine { label: "Sync Status"; value: sync.status || "idle" }
-                                    InfoLine { label: "Records"; value: String(sync.records || 0) }
-                                    InfoLine { label: "New Records"; value: String(sync.new_records || 0) }
-                                    InfoLine { label: "Repositories"; value: String(repositories.length || 0) }
-                                }
-                            }
-                        }
-
-                        SectionPanel {
-                            title: "GitHub"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    InfoLine { label: "Owner"; value: settings.github_owner || "luckasgh9170" }
-                                    InfoLine { label: "Repository"; value: settings.github_repository || "luckasapp" }
-                                    InfoLine { label: "Branch"; value: settings.github_branch || "main" }
-                                    TextField {
-                                        Layout.fillWidth: true
-                                        text: settings.github_distribution_base_url || ""
-                                        placeholderText: "GitHub distribution base URL"
-                                        color: theme.text
-                                        placeholderTextColor: theme.muted
-                                        onEditingFinished: appBridge.setSetting("github_distribution_base_url", text)
-                                        background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        AppButton { text: "Discover"; Layout.fillWidth: true; onClicked: appBridge.discoverSources() }
-                                        AppButton { text: "Build"; Layout.fillWidth: true; onClicked: appBridge.buildDistribution() }
-                                        AppButton { text: "Publish"; Layout.fillWidth: true; onClicked: appBridge.publishDistribution() }
-                                    }
-                                }
-                            }
-                        }
-
-                        SectionPanel {
-                            title: "Updates"
-                            themePanel: update.update_available ? "#172d24" : theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    InfoLine { label: "Status"; value: update.message || update.status || "idle" }
-                                    InfoLine { label: "Local Version"; value: update.local_version || "0.0.0" }
-                                    InfoLine { label: "Remote Version"; value: update.remote_version || "unknown" }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: update.release_notes || "No release notes."
-                                        color: theme.muted
-                                        font.pixelSize: 13
-                                        wrapMode: Text.WordWrap
-                                        maximumLineCount: 3
-                                    }
-                                    GridLayout {
-                                        Layout.fillWidth: true
-                                        columns: narrow ? 1 : 4
-                                        columnSpacing: 10
-                                        rowSpacing: 10
-                                        AppButton { text: "Check"; Layout.fillWidth: true; onClicked: appBridge.checkForUpdates() }
-                                        AppButton { text: "Update Now"; Layout.fillWidth: true; fill: theme.green; ink: "#07120d"; enabled: update.update_available; onClicked: appBridge.updateNow() }
-                                        AppButton { text: "Later"; Layout.fillWidth: true; enabled: update.update_available; onClicked: appBridge.updateLater() }
-                                        AppButton { text: "Skip Version"; Layout.fillWidth: true; enabled: update.update_available; onClicked: appBridge.skipUpdateVersion() }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        visible: currentPage === "Favorites"
+                        visible: currentPage === "Quick Connect"
                         Layout.fillWidth: true
                         spacing: 16
 
                         GridLayout {
                             Layout.fillWidth: true
-                            columns: root.width < 820 ? 1 : (root.width < 1260 ? 2 : 3)
-                            columnSpacing: 14
-                            rowSpacing: 14
+                            columns: narrow ? 1 : 2
+                            columnSpacing: 18
+                            rowSpacing: 18
 
-                            Repeater {
-                                model: filtered(favorites)
-                                delegate: ConfigCard {
-                                    Layout.fillWidth: true
-                                    item: modelData
-                                    onConnectClicked: appBridge.connectConfig(modelData.id)
-                                    onDisconnectClicked: appBridge.disconnect()
-                                    onTestClicked: appBridge.testConfig(modelData.id)
-                                    onCopyClicked: appBridge.copyConfig(modelData.id)
-                                    onFavoriteClicked: appBridge.toggleFavorite(modelData.id)
-                                    onExportClicked: appBridge.exportConfig(modelData.id)
-                                    onDetailsClicked: appBridge.showDetails(modelData.id)
-                                    onDeleteClicked: appBridge.deleteConfig(modelData.id)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 430
+                                radius: 24
+                                color: theme.panel
+                                border.color: theme.line
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 24
+                                    spacing: 18
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        width: 250
+                                        height: 250
+                                        radius: 125
+                                        color: appBridge.connectionStatus === "Connected" ? "#143527" : "#182335"
+                                        border.width: 2
+                                        border.color: appBridge.connectionStatus === "Connected" ? theme.green : theme.blue
+                                        Text {
+                                            anchors.centerIn: parent
+                                            width: parent.width - 44
+                                            text: quickActionText()
+                                            color: theme.text
+                                            font.pixelSize: 28
+                                            font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.WordWrap
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: quickAction()
+                                        }
+                                    }
+                                    InfoLine { label: "Best Node"; value: bestNode().name || "None" }
+                                    InfoLine { label: "Protocol"; value: (bestNode().protocol || "").toUpperCase() }
+                                    InfoLine { label: "Latency"; value: bestLatency() }
+                                    InfoLine { label: "Health Score"; value: bestNode().score ? Math.round(bestNode().score) + " / 100" : "--" }
                                 }
                             }
-                        }
 
-                        SectionPanel {
-                            visible: filtered(favorites).length === 0
-                            title: "No Favorites"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                Text {
-                                    text: "Favorite a server to keep it here."
-                                    color: theme.muted
-                                    font.pixelSize: 13
-                                    wrapMode: Text.WordWrap
+                            SectionPanel {
+                                title: "Smart Ranking"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Best Latency"; value: bestLatency() }
+                                        InfoLine { label: "Best Stability"; value: bestNode().quality || "--" }
+                                        InfoLine { label: "Recent Validation"; value: bestNode().last_check_at || "Never" }
+                                        InfoLine { label: "Success Rate"; value: bestNode().success_count ? String(bestNode().success_count) + " passed" : "--" }
+                                        AppButton {
+                                            text: "Connect Best Node"
+                                            fill: theme.green
+                                            ink: "#07120d"
+                                            Layout.fillWidth: true
+                                            onClicked: appBridge.smartConnect()
+                                        }
+                                        AppButton {
+                                            text: "Disconnect"
+                                            fill: theme.red
+                                            Layout.fillWidth: true
+                                            onClicked: appBridge.disconnect()
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -825,7 +756,6 @@ ApplicationWindow {
                             columns: narrow ? 2 : 4
                             columnSpacing: 14
                             rowSpacing: 14
-
                             StatCard { title: "Upload"; value: traffic.uploadSpeedText || "0 B/s"; accent: theme.green }
                             StatCard { title: "Download"; value: traffic.downloadSpeedText || "0 B/s"; accent: theme.blue }
                             StatCard { title: "Session"; value: traffic.durationText || "00:00"; accent: theme.amber }
@@ -838,18 +768,10 @@ ApplicationWindow {
                             themeText: theme.text
                             themeMuted: theme.muted
                             content: Component {
-                                ColumnLayout {
-                                    spacing: 14
-                                    SpeedChart {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 220
-                                        points: traffic.speedPoints || []
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        InfoLine { label: "Peak Upload"; value: traffic.peakUploadSpeedText || "0 B/s" }
-                                        InfoLine { label: "Peak Download"; value: traffic.peakDownloadSpeedText || "0 B/s" }
-                                    }
+                                SpeedChart {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 240
+                                    points: traffic.speedPoints || []
                                 }
                             }
                         }
@@ -859,109 +781,22 @@ ApplicationWindow {
                             columns: narrow ? 1 : 2
                             columnSpacing: 14
                             rowSpacing: 14
-
                             SectionPanel {
                                 title: "Daily Usage"
                                 themePanel: theme.panel
                                 themeText: theme.text
                                 themeMuted: theme.muted
                                 content: Component {
-                                    UsageBars {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 160
-                                        items: traffic.daily || []
-                                        barColor: theme.green
-                                    }
+                                    UsageBars { Layout.fillWidth: true; Layout.preferredHeight: 160; items: traffic.daily || []; barColor: theme.green }
                                 }
                             }
-
                             SectionPanel {
-                                title: "Weekly Usage"
+                                title: "Monthly Usage"
                                 themePanel: theme.panel
                                 themeText: theme.text
                                 themeMuted: theme.muted
                                 content: Component {
-                                    UsageBars {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 160
-                                        items: traffic.weekly || []
-                                        barColor: theme.blue
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        visible: currentPage === "History"
-                        Layout.fillWidth: true
-                        spacing: 16
-
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: narrow ? 2 : 4
-                            columnSpacing: 14
-                            rowSpacing: 14
-
-                            StatCard { title: "Recent Activity"; value: String(history.length || 0); accent: theme.blue }
-                            StatCard { title: "Last Sync"; value: lastUpdateText(); accent: theme.amber }
-                            StatCard { title: "New Records"; value: String(sync.new_records || 0); accent: theme.green }
-                            StatCard { title: "Current Server"; value: appBridge.currentServer; accent: appBridge.connectionMode === "disconnected" ? theme.red : theme.green }
-                        }
-
-                        SectionPanel {
-                            title: "Recent Activity"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 10
-                                    Repeater {
-                                        model: history.slice(0, 30)
-                                        delegate: Rectangle {
-                                            Layout.fillWidth: true
-                                            height: 54
-                                            radius: 16
-                                            color: theme.panel2
-                                            border.color: theme.line
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 12
-                                                spacing: 10
-                                                Text {
-                                                    text: modelData.event || "event"
-                                                    color: theme.text
-                                                    font.pixelSize: 13
-                                                    font.bold: true
-                                                    Layout.preferredWidth: 112
-                                                    elide: Text.ElideRight
-                                                }
-                                                Text {
-                                                    text: modelData.name || modelData.remote_version || modelData.mode || modelData.path || ""
-                                                    color: theme.muted
-                                                    font.pixelSize: 12
-                                                    Layout.fillWidth: true
-                                                    elide: Text.ElideRight
-                                                }
-                                                Text {
-                                                    text: modelData.time || ""
-                                                    color: theme.muted
-                                                    font.pixelSize: 11
-                                                    Layout.preferredWidth: narrow ? 0 : 160
-                                                    visible: !narrow
-                                                    elide: Text.ElideRight
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Text {
-                                        visible: history.length === 0
-                                        Layout.fillWidth: true
-                                        text: "No recent activity yet."
-                                        color: theme.muted
-                                        font.pixelSize: 13
-                                    }
+                                    UsageBars { Layout.fillWidth: true; Layout.preferredHeight: 160; items: traffic.monthly || []; barColor: theme.blue }
                                 }
                             }
                         }
@@ -972,187 +807,133 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 16
 
-                        ScrollView {
+                        GridLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 56
-                            contentWidth: tabRow.implicitWidth
-                            clip: true
-                            RowLayout {
-                                id: tabRow
-                                spacing: 8
-                                Repeater {
-                                    model: settingTabs
-                                    delegate: AppButton {
-                                        text: modelData
-                                        fill: settingsTab === modelData ? theme.green : theme.panel
-                                        ink: settingsTab === modelData ? "#07120d" : theme.text
-                                        Layout.preferredWidth: 120
-                                        onClicked: settingsTab = modelData
+                            columns: narrow ? 1 : 2
+                            columnSpacing: 14
+                            rowSpacing: 14
+
+                            SectionPanel {
+                                title: "General"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Language"; value: settings.language || "English" }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            AppButton { text: "Dark"; Layout.fillWidth: true; fill: (settings.theme || "dark") === "dark" ? theme.green : theme.panel2; ink: (settings.theme || "dark") === "dark" ? "#07120d" : theme.text; onClicked: setTheme("dark") }
+                                            AppButton { text: "Light"; Layout.fillWidth: true; fill: settings.theme === "light" ? theme.green : theme.panel2; ink: settings.theme === "light" ? "#07120d" : theme.text; onClicked: setTheme("light") }
+                                        }
+                                        ToggleLine { label: "Auto Start"; settingKey: "auto_start"; currentValue: !!settings.auto_start }
+                                        ToggleLine { label: "Auto Connect"; settingKey: "auto_connect"; currentValue: !!settings.auto_connect }
                                     }
                                 }
                             }
-                        }
 
-                        SectionPanel {
-                            visible: settingsTab === "General"
-                            title: "General"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    InfoLine { label: "Language"; value: settings.language || "English" }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: "Theme"
-                                        color: theme.muted
-                                        font.pixelSize: 12
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 10
-                                        AppButton { text: "Dark"; Layout.preferredWidth: 110; fill: (settings.theme || "dark") === "dark" ? theme.green : theme.panel2; ink: (settings.theme || "dark") === "dark" ? "#07120d" : theme.text; onClicked: setTheme("dark") }
-                                        AppButton { text: "Light"; Layout.preferredWidth: 110; fill: settings.theme === "light" ? theme.green : theme.panel2; ink: settings.theme === "light" ? "#07120d" : theme.text; onClicked: setTheme("light") }
-                                        AppButton { text: "System"; Layout.preferredWidth: 110; onClicked: setTheme("system") }
-                                    }
-                                    ToggleLine { label: "Auto Start"; settingKey: "auto_start"; currentValue: !!settings.auto_start }
-                                    ToggleLine { label: "Auto Connect"; settingKey: "auto_connect"; currentValue: !!settings.auto_connect }
-                                    ToggleLine { label: "Smart Connect"; settingKey: "smart_connect"; currentValue: settings.smart_connect === undefined ? true : settings.smart_connect }
-                                }
-                            }
-                        }
-
-                        SectionPanel {
-                            visible: settingsTab === "Synchronization"
-                            title: "Synchronization"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    ToggleLine { label: "Auto Sync"; settingKey: "auto_sync"; currentValue: settings.auto_sync === undefined ? true : settings.auto_sync }
-                                    InfoLine { label: "Sync Every"; value: String(settings.sync_interval || 5) + " minutes" }
-                                    Slider {
-                                        Layout.fillWidth: true
-                                        from: 1
-                                        to: 60
-                                        stepSize: 1
-                                        value: settings.sync_interval || 5
-                                        onMoved: appBridge.setSetting("sync_interval", Math.round(value))
-                                    }
-                                    TextField {
-                                        Layout.fillWidth: true
-                                        text: settings.github_distribution_base_url || ""
-                                        placeholderText: "GitHub dataset URL"
-                                        color: theme.text
-                                        placeholderTextColor: theme.muted
-                                        onEditingFinished: appBridge.setSetting("github_distribution_base_url", text)
-                                        background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
-                                    }
-                                    ToggleLine { label: "Auto Update"; settingKey: "auto_update"; currentValue: settings.auto_update === undefined ? true : settings.auto_update }
-                                    RowLayout {
-                                        Layout.fillWidth: true
+                            SectionPanel {
+                                title: "Synchronization"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        ToggleLine { label: "Auto Sync"; settingKey: "auto_sync"; currentValue: settings.auto_sync === undefined ? true : settings.auto_sync }
+                                        ToggleLine { label: "Background Service"; settingKey: "service_enabled"; currentValue: settings.service_enabled === undefined ? true : settings.service_enabled }
+                                        InfoLine { label: "Sync Every"; value: String(settings.sync_interval || 5) + " minutes" }
+                                        Slider { Layout.fillWidth: true; from: 1; to: 60; stepSize: 1; value: settings.sync_interval || 5; onMoved: appBridge.setSetting("sync_interval", Math.round(value)) }
+                                        TextField {
+                                            Layout.fillWidth: true
+                                            text: settings.github_distribution_base_url || ""
+                                            placeholderText: "GitHub distribution URL"
+                                            color: theme.text
+                                            placeholderTextColor: theme.muted
+                                            onEditingFinished: appBridge.setSetting("github_distribution_base_url", text)
+                                            background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
+                                        }
                                         AppButton { text: "Manual Sync"; Layout.fillWidth: true; onClicked: appBridge.scanUpdates() }
-                                        AppButton { text: "Check App Update"; Layout.fillWidth: true; onClicked: appBridge.checkForUpdates() }
                                     }
                                 }
                             }
-                        }
 
-                        SectionPanel {
-                            visible: settingsTab === "Network"
-                            title: "Network"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    TextField {
-                                        Layout.fillWidth: true
-                                        text: settings.dns_server || "1.1.1.1"
-                                        placeholderText: "DNS Server"
-                                        color: theme.text
-                                        placeholderTextColor: theme.muted
-                                        onEditingFinished: appBridge.setSetting("dns_server", text)
-                                        background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
+                            SectionPanel {
+                                title: "Performance"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Concurrent Workers"; value: String(settings.validation_workers || 4) }
+                                        Slider { Layout.fillWidth: true; from: 1; to: 32; stepSize: 1; value: settings.validation_workers || 4; onMoved: appBridge.setSetting("validation_workers", Math.round(value)) }
+                                        InfoLine { label: "Service Batch"; value: String(settings.service_health_batch || 24) }
+                                        Slider { Layout.fillWidth: true; from: 4; to: 128; stepSize: 4; value: settings.service_health_batch || 24; onMoved: appBridge.setSetting("service_health_batch", Math.round(value)) }
+                                        InfoLine { label: "Cache Size"; value: String(settings.cache_size_mb || 512) + " MB" }
                                     }
-                                    ToggleLine { label: "IPv6"; settingKey: "ipv6"; currentValue: settings.ipv6 === undefined ? true : settings.ipv6 }
-                                    ToggleLine { label: "DNS Cache"; settingKey: "dns_cache"; currentValue: settings.dns_cache === undefined ? true : settings.dns_cache }
-                                    ToggleLine { label: "SOCKS Proxy"; settingKey: "enable_socks"; currentValue: settings.enable_socks === undefined ? true : settings.enable_socks }
-                                    ToggleLine { label: "HTTP Proxy"; settingKey: "enable_http"; currentValue: settings.enable_http === undefined ? true : settings.enable_http }
                                 }
                             }
-                        }
 
-                        SectionPanel {
-                            visible: settingsTab === "Notifications"
-                            title: "Notifications"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    ToggleLine { label: "Sync Complete"; settingKey: "sync_complete_notifications"; currentValue: settings.sync_complete_notifications === undefined ? true : settings.sync_complete_notifications }
-                                    ToggleLine { label: "New Records"; settingKey: "new_update_notifications"; currentValue: settings.new_update_notifications === undefined ? true : settings.new_update_notifications }
-                                    ToggleLine { label: "Errors"; settingKey: "error_notifications"; currentValue: settings.error_notifications === undefined ? true : settings.error_notifications }
-                                    ToggleLine { label: "Beta Channel"; settingKey: "beta_channel"; currentValue: !!settings.beta_channel }
+                            SectionPanel {
+                                title: "Windows Service"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Service Status"; value: service.status || "Stopped" }
+                                        InfoLine { label: "Last Sync"; value: service.last_sync || "Never" }
+                                        InfoLine { label: "Last Health"; value: service.last_health_check || "Never" }
+                                        InfoLine { label: "Last Error"; value: service.last_error || "" }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: 2
+                                            columnSpacing: 8
+                                            rowSpacing: 8
+                                            AppButton { text: "Install"; Layout.fillWidth: true; onClicked: appBridge.serviceControl("install") }
+                                            AppButton { text: "Start"; Layout.fillWidth: true; onClicked: appBridge.serviceControl("start") }
+                                            AppButton { text: "Stop"; Layout.fillWidth: true; fill: theme.red; onClicked: appBridge.serviceControl("stop") }
+                                            AppButton { text: "Run Once"; Layout.fillWidth: true; onClicked: appBridge.serviceControl("run-once") }
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        SectionPanel {
-                            visible: settingsTab === "Performance"
-                            title: "Performance"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    InfoLine { label: "Workers"; value: String(settings.validation_workers || 4) }
-                                    Slider {
-                                        Layout.fillWidth: true
-                                        from: 1
-                                        to: 32
-                                        stepSize: 1
-                                        value: settings.validation_workers || 4
-                                        onMoved: appBridge.setSetting("validation_workers", Math.round(value))
-                                    }
-                                    InfoLine { label: "Timeout"; value: String(settings.validation_timeout || 8) + " seconds" }
-                                    Slider {
-                                        Layout.fillWidth: true
-                                        from: 2
-                                        to: 30
-                                        stepSize: 1
-                                        value: settings.validation_timeout || 8
-                                        onMoved: appBridge.setSetting("validation_timeout", Math.round(value))
-                                    }
-                                    ToggleLine { label: "Auto Recheck"; settingKey: "auto_recheck"; currentValue: !!settings.auto_recheck }
-                                }
-                            }
-                        }
-
-                        SectionPanel {
-                            visible: settingsTab === "Advanced"
-                            title: "Advanced"
-                            themePanel: theme.panel
-                            themeText: theme.text
-                            themeMuted: theme.muted
-                            content: Component {
-                                ColumnLayout {
-                                    spacing: 12
-                                    ToggleLine { label: "TUN"; settingKey: "enable_tun"; currentValue: !!settings.enable_tun }
-                                    ToggleLine { label: "Kill Switch"; settingKey: "kill_switch"; currentValue: !!settings.kill_switch }
-                                    ToggleLine { label: "DNS Leak Protection"; settingKey: "dns_leak_protection"; currentValue: settings.dns_leak_protection === undefined ? true : settings.dns_leak_protection }
-                                    ToggleLine { label: "Encrypted Storage"; settingKey: "encrypted_storage"; currentValue: !!settings.encrypted_storage }
-                                    RowLayout {
-                                        Layout.fillWidth: true
+                            SectionPanel {
+                                title: "Diagnostics"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        InfoLine { label: "Core Status"; value: diagnostics.core_running ? "Running" : "Stopped" }
+                                        InfoLine { label: "Service Status"; value: diagnostics.service_status || "Stopped" }
+                                        InfoLine { label: "DNS Status"; value: diagnostics.dns_status || "Unknown" }
+                                        InfoLine { label: "Routing Status"; value: diagnostics.route_status || "Unknown" }
+                                        InfoLine { label: "TLS Status"; value: diagnostics.tls_status || "Unknown" }
+                                        InfoLine { label: "Last Error"; value: diagnostics.last_error || diagnostics.service_last_error || "" }
                                         AppButton { text: "Restart Core"; Layout.fillWidth: true; onClicked: appBridge.restartCore() }
-                                        AppButton { text: "Stop Core"; Layout.fillWidth: true; fill: theme.red; onClicked: appBridge.stopCore() }
+                                    }
+                                }
+                            }
+
+                            SectionPanel {
+                                title: "Advanced"
+                                themePanel: theme.panel
+                                themeText: theme.text
+                                themeMuted: theme.muted
+                                content: Component {
+                                    ColumnLayout {
+                                        spacing: 12
+                                        ToggleLine { label: "SOCKS Proxy"; settingKey: "enable_socks"; currentValue: settings.enable_socks === undefined ? true : settings.enable_socks }
+                                        ToggleLine { label: "HTTP Proxy"; settingKey: "enable_http"; currentValue: settings.enable_http === undefined ? true : settings.enable_http }
+                                        ToggleLine { label: "TUN"; settingKey: "enable_tun"; currentValue: !!settings.enable_tun }
+                                        ToggleLine { label: "Kill Switch"; settingKey: "kill_switch"; currentValue: !!settings.kill_switch }
+                                        ToggleLine { label: "DNS Leak Protection"; settingKey: "dns_leak_protection"; currentValue: settings.dns_leak_protection === undefined ? true : settings.dns_leak_protection }
                                     }
                                 }
                             }

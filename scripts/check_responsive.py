@@ -15,12 +15,10 @@ from ui.bridge import AppBridge
 
 SIZES = [(640, 720), (900, 700), (1220, 780), (1600, 900)]
 PAGES = [
-    "Home",
-    "Scan",
-    "Servers",
-    "Favorites",
+    "Dashboard",
+    "Nodes",
+    "Quick Connect",
     "Statistics",
-    "History",
     "Settings",
 ]
 

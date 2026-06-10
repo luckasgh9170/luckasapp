@@ -17,6 +17,8 @@ python main.py
 - Simplified premium VPN UI with working sidebar pages: Home, Scan, Servers, Favorites, Statistics, History and Settings
 - Large Quick Connect control, central SCAN action, modern cards, responsive layouts and live progress bar
 - GitHub-backed dataset metadata, 5-minute auto sync, auto-update check on startup, Update Now, Later and Skip Version actions
+- Native Windows background service for backend synchronization, local cache maintenance and health checks
+- Smart Connection Engine with ranked Quick Connect and post-connect DNS/TLS/route/outbound verification
 - GitHub Actions workflows for CI, release packaging, changelog generation and version management
 - Async subscription collector and parser for `vmess`, `vless`, `trojan`, `ss`, `hysteria` and `tuic`
 - SQLite persistence via SQLAlchemy and local cache storage
@@ -98,6 +100,42 @@ Install the Windows scheduled task after setting Telegram credentials:
 ```powershell
 .\scripts\install_telegram_sync_task.ps1
 ```
+
+## Windows background service
+
+Install and start the native Windows Service:
+
+```powershell
+cd D:\luckasapp
+.\scripts\service_control.ps1 -Action install
+```
+
+Useful service commands:
+
+```powershell
+.\scripts\service_control.ps1 -Action status
+.\scripts\service_control.ps1 -Action start
+.\scripts\service_control.ps1 -Action stop
+.\scripts\service_control.ps1 -Action restart
+.\scripts\service_control.ps1 -Action run-once
+.\scripts\service_control.ps1 -Action remove
+```
+
+The service writes status and logs here:
+
+```text
+cache/service_status.json
+logs/service.log
+```
+
+Responsibilities:
+
+- start automatically with Windows
+- sync the GitHub backend every 5 minutes
+- merge updates into the local SQLite cache
+- perform async health checks
+- keep fast offline cache available for the UI
+- expose diagnostics for service/core/DNS/routing failures
 
 GitHub dataset files are generated in `distribution/`:
 
