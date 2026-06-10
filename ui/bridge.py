@@ -78,6 +78,7 @@ class AppBridge(QObject):
             "records": 0,
             "new_records": 0,
             "updated": "",
+            "skipped": False,
         }
         self._update_status = {
             "status": "idle",
@@ -93,6 +94,11 @@ class AppBridge(QObject):
         self._traffic_timer.setInterval(1000)
         self._traffic_timer.timeout.connect(self._sample_traffic)
         self._traffic_timer.start()
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(self.autoSyncFromGitHub)
+        self._configure_sync_timer()
+        if self.settings.get("auto_sync", True):
+            QTimer.singleShot(900, self.autoSyncFromGitHub)
         if self.settings.get("auto_update", True):
             QTimer.singleShot(1600, self.checkForUpdates)
 
@@ -195,6 +201,14 @@ class AppBridge(QObject):
             self.configsChanged.emit()
             self.statsChanged.emit()
 
+    def _configure_sync_timer(self) -> None:
+        interval_minutes = int(self.settings.get("sync_interval", 5) or 5)
+        self._sync_timer.setInterval(max(1, interval_minutes) * 60 * 1000)
+        if self.settings.get("auto_sync", True):
+            self._sync_timer.start()
+        else:
+            self._sync_timer.stop()
+
     @Slot(result="QVariantList")
     def configList(self) -> list[dict]:
         items: list[dict] = []
@@ -288,6 +302,8 @@ class AppBridge(QObject):
                 self.health.timeout = max(2, float(value))
             except Exception:
                 pass
+        if key in {"auto_sync", "sync_interval"}:
+            self._configure_sync_timer()
         self.settingsChanged.emit()
         self.notification.emit("Setting updated.")
 
@@ -318,28 +334,43 @@ class AppBridge(QObject):
 
     @Slot()
     def scanUpdates(self) -> None:
+        self._sync_from_github(force=True, user_visible=True)
+
+    @Slot()
+    def autoSyncFromGitHub(self) -> None:
+        self._sync_from_github(force=False, user_visible=False)
+
+    def _sync_from_github(self, *, force: bool, user_visible: bool) -> None:
         base_url = str(self.settings.get("github_distribution_base_url", "")).strip()
         if not base_url:
-            self.notification.emit("Set GitHub distribution base URL in Settings first.")
+            if user_visible:
+                self.notification.emit("Set GitHub distribution base URL in Settings first.")
             return
         if self._busy:
-            self.notification.emit("Another operation is running.")
+            if user_visible:
+                self.notification.emit("Another operation is running.")
             return
         self._set_busy(True)
         self._start_progress("Scanning GitHub distribution", 0, "Checking version.json")
         self._sync_status["status"] = "checking"
         self.syncChanged.emit()
-        future = self.runner.submit(GitHubDatasetClient(self.root, base_url).sync())
+        future = self.runner.submit(GitHubDatasetClient(self.root, base_url).sync(force=force))
 
         def done(_future) -> None:
             try:
                 result = _future.result()
                 self._sync_status = {"status": "complete", **result}
-                self.notification.emit(f"SCAN complete: {result['new_records']} new records.")
+                if result.get("skipped"):
+                    message = "GitHub dataset is already current."
+                else:
+                    message = f"SCAN complete: {result['new_records']} new records."
+                if user_visible or int(result.get("new_records", 0) or 0) > 0:
+                    self.notification.emit(message)
                 self._finish_progress("GitHub dataset merged")
             except Exception as exc:
                 self._sync_status["status"] = "failed"
-                self.notification.emit(f"SCAN failed: {exc}")
+                if user_visible:
+                    self.notification.emit(f"SCAN failed: {exc}")
             finally:
                 self._set_busy(False)
                 self.syncChanged.emit()
@@ -772,7 +803,9 @@ class AppBridge(QObject):
 
     @Slot()
     def publishDistribution(self) -> None:
-        result = GitHubDistributionPublisher(self.root).publish("Update dataset from desktop client")
+        publisher = GitHubDistributionPublisher(self.root)
+        total_records = int(self._sync_status.get("records", 0) or self.db.config_stats().get("total", 0) or 0)
+        result = publisher.publish(publisher.auto_message(total_records))
         self.notification.emit(result.splitlines()[-1] if result else "Publish completed.")
 
 

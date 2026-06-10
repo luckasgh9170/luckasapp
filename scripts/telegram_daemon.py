@@ -19,18 +19,20 @@ async def main_loop(channel: str, interval: int, limit: int, publish: bool) -> N
             records, new_count = await collector.sync(limit=limit)
             print(f"[sync] channel={channel} total={len(records)} new={new_count}")
             if publish and new_count:
-                print(GitHubDistributionPublisher(ROOT).publish(f"Sync {channel}: {new_count} new configs"))
+                publisher = GitHubDistributionPublisher(ROOT)
+                print(publisher.publish(publisher.auto_message(len(records))))
         except Exception as exc:
             print(f"[error] {exc}")
         await asyncio.sleep(interval)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Continuously sync authorized Telegram channel into distribution dataset.")
+    parser = argparse.ArgumentParser(description="Continuously sync authorized Telegram channel into GitHub distribution dataset.")
     parser.add_argument("--channel", default="ConfigsHUB2")
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--limit", type=int, default=300)
-    parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--publish", action="store_true", default=True)
+    parser.add_argument("--no-publish", action="store_false", dest="publish")
     args = parser.parse_args()
     asyncio.run(main_loop(args.channel, args.interval, args.limit, args.publish))
     return 0

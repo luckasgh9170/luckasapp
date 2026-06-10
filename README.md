@@ -14,9 +14,9 @@ python main.py
 
 ## Features in this build
 
-- Simplified premium VPN UI with six working sidebar pages: Dashboard, Servers, Scan, Favorites, Statistics and Settings
+- Simplified premium VPN UI with working sidebar pages: Home, Scan, Servers, Favorites, Statistics, History and Settings
 - Large Quick Connect control, central SCAN action, modern cards, responsive layouts and live progress bar
-- GitHub-backed version metadata, auto-update check on startup, Update Now, Later and Skip Version actions
+- GitHub-backed dataset metadata, 5-minute auto sync, auto-update check on startup, Update Now, Later and Skip Version actions
 - GitHub Actions workflows for CI, release packaging, changelog generation and version management
 - Async subscription collector and parser for `vmess`, `vless`, `trojan`, `ss`, `hysteria` and `tuic`
 - SQLite persistence via SQLAlchemy and local cache storage
@@ -76,6 +76,45 @@ Package release zip:
 .\scripts\package_release.ps1
 ```
 
+## Telegram to GitHub auto sync
+
+The automated chain is:
+
+```text
+Telegram Channel -> Telegram daemon -> distribution JSON -> GitHub commit/push -> Desktop SCAN/auto-sync -> SQLite/UI
+```
+
+The daemon polls every 5 minutes by default:
+
+```powershell
+cd D:\luckasapp
+$env:TELEGRAM_API_ID="your_api_id"
+$env:TELEGRAM_API_HASH="your_api_hash"
+.\.venv\Scripts\python.exe .\scripts\telegram_daemon.py --channel ConfigsHUB2 --interval 300 --limit 300 --publish
+```
+
+Install the Windows scheduled task after setting Telegram credentials:
+
+```powershell
+.\scripts\install_telegram_sync_task.ps1
+```
+
+GitHub dataset files are generated in `distribution/`:
+
+```text
+data/latest.json
+data/archive.json
+data/metadata.json
+data/stats.json
+version.json
+```
+
+Every publish commit uses an automatic message like:
+
+```text
+Auto Sync Update 2026-06-10T00:00:00Z Record Count 1200
+```
+
 ## Download official cores from GitHub
 
 ```powershell
@@ -133,7 +172,11 @@ The generated GitHub-ready backend is in `distribution/`:
 
 - `version.json`
 - `index.json`
-- `data/latest/latest.json`
+- `data/latest.json`
+- `data/archive.json`
+- `data/metadata.json`
+- `data/stats.json`
+- `data/latest/latest.json` legacy compatibility copy
 - `data/archive/*.json`
 - `stats/stats.json`
 

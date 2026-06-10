@@ -29,7 +29,7 @@ ApplicationWindow {
 
     property bool compact: width < 960
     property bool narrow: width < 760
-    property string currentPage: "Dashboard"
+    property string currentPage: "Home"
     property string settingsTab: "General"
     property string toast: "Ready"
     property string searchText: ""
@@ -43,8 +43,8 @@ ApplicationWindow {
     property var settings: ({})
     property var sync: ({})
     property var update: ({})
-    property var navItems: ["Dashboard", "Servers", "Scan", "Favorites", "Statistics", "Settings"]
-    property var settingTabs: ["General", "Appearance", "Network", "Updates", "Performance", "Advanced"]
+    property var navItems: ["Home", "Scan", "Servers", "Favorites", "Statistics", "History", "Settings"]
+    property var settingTabs: ["General", "Synchronization", "Performance", "Notifications", "Advanced"]
 
     function reloadAll() {
         configs = appBridge.configList()
@@ -488,7 +488,7 @@ ApplicationWindow {
                     Item { Layout.preferredHeight: 2 }
 
                     ColumnLayout {
-                        visible: currentPage === "Dashboard"
+                        visible: currentPage === "Home"
                         Layout.fillWidth: true
                         spacing: 18
 
@@ -498,10 +498,10 @@ ApplicationWindow {
                             columnSpacing: 14
                             rowSpacing: 14
 
-                            StatCard { title: "Total Servers"; value: String(stats.total || 0); accent: theme.blue }
-                            StatCard { title: "Working Servers"; value: String(stats.ready || 0); accent: theme.green }
-                            StatCard { title: "Last Update"; value: lastUpdateText(); accent: theme.amber }
-                            StatCard { title: "Current Connection"; value: appBridge.currentServer; accent: appBridge.connectionMode === "disconnected" ? theme.red : theme.green }
+                            StatCard { title: "Total Records"; value: String(stats.total || 0); accent: theme.blue }
+                            StatCard { title: "New Records"; value: String(sync.new_records || 0); accent: theme.green }
+                            StatCard { title: "Last Sync"; value: lastUpdateText(); accent: theme.amber }
+                            StatCard { title: "Active Tests"; value: appBridge.validationRunning ? String(stats.testing || 0) : "0"; accent: appBridge.validationRunning ? theme.green : theme.red }
                         }
 
                         Rectangle {
@@ -876,20 +876,91 @@ ApplicationWindow {
                             }
 
                             SectionPanel {
-                                title: "Connection History"
+                                title: "Weekly Usage"
                                 themePanel: theme.panel
                                 themeText: theme.text
                                 themeMuted: theme.muted
                                 content: Component {
-                                    ColumnLayout {
-                                        spacing: 8
-                                        Repeater {
-                                            model: history.slice(0, 8)
-                                            delegate: InfoLine {
-                                                label: modelData.event || "event"
-                                                value: modelData.name || modelData.mode || modelData.path || ""
+                                    UsageBars {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 160
+                                        items: traffic.weekly || []
+                                        barColor: theme.blue
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        visible: currentPage === "History"
+                        Layout.fillWidth: true
+                        spacing: 16
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: narrow ? 2 : 4
+                            columnSpacing: 14
+                            rowSpacing: 14
+
+                            StatCard { title: "Recent Activity"; value: String(history.length || 0); accent: theme.blue }
+                            StatCard { title: "Last Sync"; value: lastUpdateText(); accent: theme.amber }
+                            StatCard { title: "New Records"; value: String(sync.new_records || 0); accent: theme.green }
+                            StatCard { title: "Current Server"; value: appBridge.currentServer; accent: appBridge.connectionMode === "disconnected" ? theme.red : theme.green }
+                        }
+
+                        SectionPanel {
+                            title: "Recent Activity"
+                            themePanel: theme.panel
+                            themeText: theme.text
+                            themeMuted: theme.muted
+                            content: Component {
+                                ColumnLayout {
+                                    spacing: 10
+                                    Repeater {
+                                        model: history.slice(0, 30)
+                                        delegate: Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 54
+                                            radius: 16
+                                            color: theme.panel2
+                                            border.color: theme.line
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                spacing: 10
+                                                Text {
+                                                    text: modelData.event || "event"
+                                                    color: theme.text
+                                                    font.pixelSize: 13
+                                                    font.bold: true
+                                                    Layout.preferredWidth: 112
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    text: modelData.name || modelData.remote_version || modelData.mode || modelData.path || ""
+                                                    color: theme.muted
+                                                    font.pixelSize: 12
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    text: modelData.time || ""
+                                                    color: theme.muted
+                                                    font.pixelSize: 11
+                                                    Layout.preferredWidth: narrow ? 0 : 160
+                                                    visible: !narrow
+                                                    elide: Text.ElideRight
+                                                }
                                             }
                                         }
+                                    }
+                                    Text {
+                                        visible: history.length === 0
+                                        Layout.fillWidth: true
+                                        text: "No recent activity yet."
+                                        color: theme.muted
+                                        font.pixelSize: 13
                                     }
                                 }
                             }
@@ -932,6 +1003,19 @@ ApplicationWindow {
                                 ColumnLayout {
                                     spacing: 12
                                     InfoLine { label: "Language"; value: settings.language || "English" }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "Theme"
+                                        color: theme.muted
+                                        font.pixelSize: 12
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 10
+                                        AppButton { text: "Dark"; Layout.preferredWidth: 110; fill: (settings.theme || "dark") === "dark" ? theme.green : theme.panel2; ink: (settings.theme || "dark") === "dark" ? "#07120d" : theme.text; onClicked: setTheme("dark") }
+                                        AppButton { text: "Light"; Layout.preferredWidth: 110; fill: settings.theme === "light" ? theme.green : theme.panel2; ink: settings.theme === "light" ? "#07120d" : theme.text; onClicked: setTheme("light") }
+                                        AppButton { text: "System"; Layout.preferredWidth: 110; onClicked: setTheme("system") }
+                                    }
                                     ToggleLine { label: "Auto Start"; settingKey: "auto_start"; currentValue: !!settings.auto_start }
                                     ToggleLine { label: "Auto Connect"; settingKey: "auto_connect"; currentValue: !!settings.auto_connect }
                                     ToggleLine { label: "Smart Connect"; settingKey: "smart_connect"; currentValue: settings.smart_connect === undefined ? true : settings.smart_connect }
@@ -940,17 +1024,39 @@ ApplicationWindow {
                         }
 
                         SectionPanel {
-                            visible: settingsTab === "Appearance"
-                            title: "Appearance"
+                            visible: settingsTab === "Synchronization"
+                            title: "Synchronization"
                             themePanel: theme.panel
                             themeText: theme.text
                             themeMuted: theme.muted
                             content: Component {
-                                RowLayout {
-                                    spacing: 10
-                                    AppButton { text: "Dark"; Layout.preferredWidth: 110; fill: (settings.theme || "dark") === "dark" ? theme.green : theme.panel2; ink: (settings.theme || "dark") === "dark" ? "#07120d" : theme.text; onClicked: setTheme("dark") }
-                                    AppButton { text: "Light"; Layout.preferredWidth: 110; fill: settings.theme === "light" ? theme.green : theme.panel2; ink: settings.theme === "light" ? "#07120d" : theme.text; onClicked: setTheme("light") }
-                                    AppButton { text: "System"; Layout.preferredWidth: 110; onClicked: setTheme("system") }
+                                ColumnLayout {
+                                    spacing: 12
+                                    ToggleLine { label: "Auto Sync"; settingKey: "auto_sync"; currentValue: settings.auto_sync === undefined ? true : settings.auto_sync }
+                                    InfoLine { label: "Sync Every"; value: String(settings.sync_interval || 5) + " minutes" }
+                                    Slider {
+                                        Layout.fillWidth: true
+                                        from: 1
+                                        to: 60
+                                        stepSize: 1
+                                        value: settings.sync_interval || 5
+                                        onMoved: appBridge.setSetting("sync_interval", Math.round(value))
+                                    }
+                                    TextField {
+                                        Layout.fillWidth: true
+                                        text: settings.github_distribution_base_url || ""
+                                        placeholderText: "GitHub dataset URL"
+                                        color: theme.text
+                                        placeholderTextColor: theme.muted
+                                        onEditingFinished: appBridge.setSetting("github_distribution_base_url", text)
+                                        background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
+                                    }
+                                    ToggleLine { label: "Auto Update"; settingKey: "auto_update"; currentValue: settings.auto_update === undefined ? true : settings.auto_update }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        AppButton { text: "Manual Sync"; Layout.fillWidth: true; onClicked: appBridge.scanUpdates() }
+                                        AppButton { text: "Check App Update"; Layout.fillWidth: true; onClicked: appBridge.checkForUpdates() }
+                                    }
                                 }
                             }
                         }
@@ -982,30 +1088,18 @@ ApplicationWindow {
                         }
 
                         SectionPanel {
-                            visible: settingsTab === "Updates"
-                            title: "Updates"
+                            visible: settingsTab === "Notifications"
+                            title: "Notifications"
                             themePanel: theme.panel
                             themeText: theme.text
                             themeMuted: theme.muted
                             content: Component {
                                 ColumnLayout {
                                     spacing: 12
-                                    ToggleLine { label: "Auto Update"; settingKey: "auto_update"; currentValue: settings.auto_update === undefined ? true : settings.auto_update }
+                                    ToggleLine { label: "Sync Complete"; settingKey: "sync_complete_notifications"; currentValue: settings.sync_complete_notifications === undefined ? true : settings.sync_complete_notifications }
+                                    ToggleLine { label: "New Records"; settingKey: "new_update_notifications"; currentValue: settings.new_update_notifications === undefined ? true : settings.new_update_notifications }
+                                    ToggleLine { label: "Errors"; settingKey: "error_notifications"; currentValue: settings.error_notifications === undefined ? true : settings.error_notifications }
                                     ToggleLine { label: "Beta Channel"; settingKey: "beta_channel"; currentValue: !!settings.beta_channel }
-                                    TextField {
-                                        Layout.fillWidth: true
-                                        text: settings.update_version_url || ""
-                                        placeholderText: "version.json URL"
-                                        color: theme.text
-                                        placeholderTextColor: theme.muted
-                                        onEditingFinished: appBridge.setSetting("update_version_url", text)
-                                        background: Rectangle { radius: 14; color: theme.panel2; border.color: theme.line }
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        AppButton { text: "Check"; Layout.preferredWidth: 110; onClicked: appBridge.checkForUpdates() }
-                                        AppButton { text: "Update Now"; Layout.preferredWidth: 140; fill: theme.green; ink: "#07120d"; enabled: update.update_available; onClicked: appBridge.updateNow() }
-                                    }
                                 }
                             }
                         }

@@ -19,7 +19,8 @@ async def run(channel: str, limit: int, publish: bool) -> None:
     print(f"Total dataset records: {len(records)}")
     print(f"New records: {new_count}")
     if publish and new_count:
-        result = GitHubDistributionPublisher(ROOT).publish(f"Sync {channel}: {new_count} new configs")
+        publisher = GitHubDistributionPublisher(ROOT)
+        result = publisher.publish(publisher.auto_message(len(records)))
         print(result)
 
 

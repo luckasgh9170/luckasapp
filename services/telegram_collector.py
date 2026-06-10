@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC
 from pathlib import Path
@@ -54,7 +55,10 @@ class TelegramChannelCollector:
                 self._append_message(
                     {
                         "message_id": message.id,
+                        "date": created_at,
                         "publish_date": created_at,
+                        "source_channel": self.channel,
+                        "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                         "original_content": text,
                         "parsed_content": parsed,
                         "source_metadata": {"channel": self.channel},

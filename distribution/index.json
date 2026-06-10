@@ -1,10 +1,14 @@
 {
-  "version": "1.0.1",
-  "updated": "2026-06-09T11:58:02Z",
+  "version": "1.0.2",
+  "updated": "2026-06-10T05:57:18Z",
   "files": {
-    "latest": "data/latest/latest.json",
+    "latest": "data/latest.json",
+    "archive": "data/archive.json",
+    "metadata": "data/metadata.json",
     "version": "version.json",
-    "stats": "stats/stats.json"
+    "stats": "data/stats.json",
+    "legacy_latest": "data/latest/latest.json",
+    "legacy_stats": "stats/stats.json"
   },
   "protocols": {
     "hysteria": 1,
@@ -15,5 +19,6 @@
     "vless": 4106,
     "vmess": 4550
   },
-  "total_items": 18112
+  "total_items": 18112,
+  "records": 18112
 }
