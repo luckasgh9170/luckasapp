@@ -1,8 +1,8 @@
 {
-  "version": "1.1.0",
-  "build": 101,
-  "updated_at": "2026-06-10T07:41:25Z",
-  "release_notes": "Add Windows background service, smart connection verification, proxy/TUN controls, diagnostics, and healthy-node dashboard.",
+  "version": "1.1.1",
+  "build": 102,
+  "updated_at": "2026-06-10T08:07:04Z",
+  "release_notes": "Fix Windows Service native host startup and background service installer.",
   "owner": "luckasgh9170",
   "repository": "luckasapp",
   "download_url": "https://github.com/luckasgh9170/luckasapp/releases/latest/download/LuckasApp-windows.zip",
