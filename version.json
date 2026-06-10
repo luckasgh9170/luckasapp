@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "build": 100,
+  "updated_at": "2026-06-10T00:00:00Z",
+  "release_notes": "Initial GitHub auto-update enabled build.",
+  "owner": "luckasgh9170",
+  "repository": "luckasapp",
+  "download_url": "https://github.com/luckasgh9170/luckasapp/releases/latest/download/LuckasApp-windows.zip",
+  "release_url": "https://github.com/luckasgh9170/luckasapp/releases/latest",
+  "minimum_supported_build": 100
+}

@@ -1,0 +1,49 @@
+name: Package Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Test
+        shell: pwsh
+        run: |
+          python -m compileall main.py core database models repositories services scripts ui workers
+          $env:QT_QPA_PLATFORM='offscreen'
+          python .\scripts\check_responsive.py
+      - name: Generate changelog
+        run: python .\scripts\generate_changelog.py
+      - name: Download Xray and V2Ray cores
+        shell: pwsh
+        run: .\scripts\download_cores.ps1
+      - name: Package
+        shell: pwsh
+        run: .\scripts\package_release.ps1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuckasApp-windows
+          path: release/LuckasApp-windows.zip
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: CHANGELOG.md
+          files: |
+            release/LuckasApp-windows.zip
+            version.json

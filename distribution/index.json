@@ -1,0 +1,19 @@
+{
+  "version": "1.0.1",
+  "updated": "2026-06-09T11:58:02Z",
+  "files": {
+    "latest": "data/latest/latest.json",
+    "version": "version.json",
+    "stats": "stats/stats.json"
+  },
+  "protocols": {
+    "hysteria": 1,
+    "hysteria2": 6,
+    "shadowsocks": 9122,
+    "trojan": 326,
+    "tuic": 1,
+    "vless": 4106,
+    "vmess": 4550
+  },
+  "total_items": 18112
+}
