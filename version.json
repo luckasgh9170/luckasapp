@@ -1,8 +1,8 @@
 {
-  "version": "1.2.0",
-  "build": 103,
-  "updated_at": "2026-06-11T10:47:38Z",
-  "release_notes": "Production hardening: resilient API client, secure TLS verification, atomic GitHub sync cache, safe updater extraction, Windows system proxy control, non-blocking connection export, failover, diagnostics, and technical audit report.",
+  "version": "1.2.1",
+  "build": 104,
+  "updated_at": "2026-06-11T11:03:17Z",
+  "release_notes": "GitHub dataset diffing for added modified and removed records, non-blocking desktop publishing, stronger dataset validation, and updated diagnostics/audit reporting.",
   "owner": "luckasgh9170",
   "repository": "luckasapp",
   "download_url": "https://github.com/luckasgh9170/luckasapp/releases/latest/download/LuckasApp-windows.zip",

@@ -464,7 +464,12 @@ class AppBridge(QObject):
                     self._finish_progress("GitHub dataset current")
                     self._set_busy(False)
                 else:
-                    message = f"SCAN complete: {result['new_records']} new records."
+                    message = (
+                        "SCAN complete: "
+                        f"{int(result.get('new_records', 0) or 0)} new, "
+                        f"{int(result.get('modified_records', 0) or 0)} modified, "
+                        f"{int(result.get('removed_records', 0) or 0)} removed."
+                    )
                     self.notification.emit(message)
                     self._finish_progress("GitHub dataset merged")
                     new_count = int(result.get("new_records", 0) or 0)
@@ -987,10 +992,34 @@ class AppBridge(QObject):
 
     @Slot()
     def publishDistribution(self) -> None:
-        publisher = GitHubDistributionPublisher(self.root)
-        total_records = int(self._sync_status.get("records", 0) or self.db.config_stats().get("total", 0) or 0)
-        result = publisher.publish(publisher.auto_message(total_records))
-        self.notification.emit(result.splitlines()[-1] if result else "Publish completed.")
+        if self._busy:
+            self.notification.emit("Another operation is running.")
+            return
+        self._set_busy(True)
+        self._start_progress("Publishing distribution", 0, "Committing data to GitHub")
+
+        def publish() -> str:
+            publisher = GitHubDistributionPublisher(self.root)
+            total_records = int(self._sync_status.get("records", 0) or self.db.config_stats().get("total", 0) or 0)
+            return publisher.publish(publisher.auto_message(total_records))
+
+        async def publish_async() -> str:
+            return await asyncio.to_thread(publish)
+
+        future = self.runner.submit(publish_async())
+
+        def done(_future) -> None:
+            try:
+                result = _future.result()
+                self.notification.emit(result.splitlines()[-1] if result else "Publish completed.")
+                self._finish_progress("Distribution published")
+            except Exception as exc:
+                self.notification.emit(f"Publish failed: {exc}")
+            finally:
+                self._set_busy(False)
+                self.syncChanged.emit()
+
+        future.add_done_callback(done)
 
     @Slot(str)
     def serviceControl(self, action: str) -> None:

@@ -20,12 +20,15 @@ Reviewed and hardened the VPN/proxy client architecture around connectivity, Git
 
 - GitHub sync now uses a shared `ApiClient` with timeouts, retries, request logging and a circuit breaker.
 - Version cache writes are atomic.
+- Remote dataset sync now keeps a local index and detects added, modified and removed records.
+- Records removed from the GitHub distribution are marked offline with score `0` so they are excluded from recommendations and auto-connect.
 - Subscription collection uses the same API client and no longer creates one HTTP client per source.
 - Background service cleanup only removes old, non-favorite, repeatedly failing configs.
 
 ### Performance
 
 - Heavy connection config export no longer blocks QML/main thread.
+- GitHub distribution publishing from the desktop bridge now runs in a background worker.
 - GitHub sync, config parsing, validation and backend calls remain on background asyncio workers.
 - HTTP connection pooling is centralized in `ApiClient`.
 
@@ -42,6 +45,7 @@ Reviewed and hardened the VPN/proxy client architecture around connectivity, Git
 - Update zip extraction is protected against path traversal.
 - Xray TLS outbound keeps `allowInsecure` false.
 - Malformed dataset entries are validated through Pydantic models before insertion.
+- GitHub dataset downloads reject non-list JSON payloads before writing local storage.
 
 ## Remaining Operational Constraints
 

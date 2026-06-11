@@ -260,6 +260,25 @@ class Database:
             session.commit()
         return count
 
+    def mark_remote_removed(self, config_ids: set[str]) -> int:
+        if not config_ids:
+            return 0
+        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        with Session(self.engine) as session:
+            rows = session.scalars(select(ConfigRow).where(ConfigRow.id.in_(config_ids))).all()
+            for row in rows:
+                row.status = ConfigStatus.OFFLINE.value
+                row.status_detail = "Removed from GitHub distribution"
+                row.ping_ms = None
+                row.connection_time_ms = None
+                row.handshake_time_ms = None
+                row.response_time_ms = None
+                row.last_check_at = now
+                row.failure_count = (row.failure_count or 0) + 1
+                row.score = 0
+            session.commit()
+            return len(rows)
+
     def count_by_status(self) -> dict[str, int]:
         failed = [s.value for s in (ConfigStatus.OFFLINE, ConfigStatus.TIMEOUT, ConfigStatus.INVALID, ConfigStatus.UNSTABLE)]
         ready = [s.value for s in (ConfigStatus.HEALTHY, ConfigStatus.WORKING, ConfigStatus.SLOW, ConfigStatus.ONLINE)]

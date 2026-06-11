@@ -1,5 +1,5 @@
 # Changelog
 
-## v1.1.1 - 2026-06-11T10:47:39Z
+## v1.2.0 - 2026-06-11T11:03:17Z
 
 - Maintenance update

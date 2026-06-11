@@ -18,6 +18,7 @@ python main.py
 - Large Quick Connect control, central SCAN action, modern cards, responsive layouts and live progress bar
 - GitHub-backed dataset metadata, 5-minute auto sync, auto-update check on startup, Update Now, Later and Skip Version actions
 - Native Windows background service for backend synchronization, local cache maintenance and health checks
+- GitHub dataset diffing for added, modified and removed records, with removed nodes excluded from recommendations
 - Smart Connection Engine with ranked Quick Connect and post-connect DNS/TLS/route/outbound verification
 - Shared backend API client with retries, timeouts, circuit breaker and structured network logs
 - GitHub Actions workflows for CI, release packaging, changelog generation and version management

@@ -89,10 +89,17 @@ class BackgroundServiceRuntime:
                 remote_version=result.get("remote_version", ""),
                 records=result.get("records", 0),
                 new_records=result.get("new_records", 0),
+                modified_records=result.get("modified_records", 0),
+                removed_records=result.get("removed_records", 0),
             )
             self.state.log(
                 "sync",
-                f"GitHub sync complete: {result.get('new_records', 0)} new records",
+                (
+                    "GitHub sync complete: "
+                    f"{result.get('new_records', 0)} new, "
+                    f"{result.get('modified_records', 0)} modified, "
+                    f"{result.get('removed_records', 0)} removed"
+                ),
                 remote_version=result.get("remote_version", ""),
             )
         except Exception as exc:
