@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import orjson
 
 from database.db import Database
 from models.dataset import DatasetRecord
+from services.api_client import ApiClient, RetryPolicy
 from services.dataset import dataset_record_to_config
 from services.history import HistoryStore
 
@@ -20,10 +20,8 @@ class GitHubDatasetClient:
     async def sync(self, force: bool = True) -> dict:
         if not self.base_url:
             raise RuntimeError("Set github_distribution_base_url in Settings first.")
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            version_response = await client.get(f"{self.base_url}/version.json")
-            version_response.raise_for_status()
-            version = version_response.json()
+        async with ApiClient(self.root, timeout=20, retry=RetryPolicy(attempts=4)) as client:
+            version = await client.get_json(f"{self.base_url}/version.json")
             local_version = self._local_version()
             if not force and self._same_version(local_version, version):
                 return {
@@ -37,7 +35,7 @@ class GitHubDatasetClient:
             records = await self._fetch_records(client)
         configs = [dataset_record_to_config(record) for record in records]
         added = Database(self.root).upsert_configs(configs)
-        self.version_cache.write_bytes(orjson.dumps(version, option=orjson.OPT_INDENT_2))
+        _atomic_write_json(self.version_cache, version)
         HistoryStore(self.root).add(
             "sync",
             {
@@ -59,10 +57,8 @@ class GitHubDatasetClient:
     async def check_version(self) -> dict:
         if not self.base_url:
             raise RuntimeError("Set github_distribution_base_url in Settings first.")
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            version_response = await client.get(f"{self.base_url}/version.json")
-            version_response.raise_for_status()
-            remote = version_response.json()
+        async with ApiClient(self.root, timeout=20, retry=RetryPolicy(attempts=3)) as client:
+            remote = await client.get_json(f"{self.base_url}/version.json")
         local = self._local_version()
         return {
             "remote": remote,
@@ -78,7 +74,7 @@ class GitHubDatasetClient:
         except Exception:
             return {}
 
-    async def _fetch_records(self, client: httpx.AsyncClient) -> list[DatasetRecord]:
+    async def _fetch_records(self, client: ApiClient) -> list[DatasetRecord]:
         urls = [
             f"{self.base_url}/data/latest.json",
             f"{self.base_url}/data/latest/latest.json",
@@ -86,9 +82,8 @@ class GitHubDatasetClient:
         last_error: Exception | None = None
         for url in urls:
             try:
-                response = await client.get(url)
-                response.raise_for_status()
-                return [DatasetRecord(**item) for item in response.json()]
+                payload = await client.get_json(url)
+                return [DatasetRecord(**item) for item in payload]
             except Exception as exc:
                 last_error = exc
         raise RuntimeError(f"Could not download GitHub dataset: {last_error}")
@@ -100,3 +95,10 @@ class GitHubDatasetClient:
         local_records = int(local.get("records", local.get("total_items", 0)) or 0)
         remote_records = int(remote.get("records", remote.get("total_items", 0)) or 0)
         return bool(local_version) and local_version == remote_version and local_records == remote_records
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2))
+    temp.replace(path)

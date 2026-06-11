@@ -21,6 +21,8 @@ def export_xray_config(
     socks_port: int | None = 10808,
     http_port: int | None = 10809,
     loglevel: str = "warning",
+    dns_server: str = "1.1.1.1",
+    prefer_ipv6: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     inbounds = []
@@ -43,10 +45,22 @@ def export_xray_config(
                 "protocol": "http",
             }
         )
+    outbound = _build_outbound(config)
     document = {
         "log": {"loglevel": loglevel},
+        "dns": {
+            "servers": [dns_server or "1.1.1.1", "8.8.8.8"],
+            "queryStrategy": "UseIP" if prefer_ipv6 else "UseIPv4",
+        },
         "inbounds": inbounds,
-        "outbounds": [_build_outbound(config), {"protocol": "freedom", "tag": "direct"}],
+        "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "rules": [
+                {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
+                {"type": "field", "network": "tcp,udp", "outboundTag": "proxy"},
+            ],
+        },
     }
     path.write_bytes(orjson.dumps(document, option=orjson.OPT_INDENT_2))
     return path
@@ -185,6 +199,7 @@ def _stream_settings(
         tls_settings = {"serverName": server_name} if server_name else {}
         if fingerprint:
             tls_settings["fingerprint"] = fingerprint
+        tls_settings["allowInsecure"] = False
         settings["tlsSettings"] = tls_settings
     if security == "reality":
         reality_settings = {
@@ -196,7 +211,10 @@ def _stream_settings(
         }
         settings["realitySettings"] = {key: value for key, value in reality_settings.items() if value}
     if network == "ws":
-        settings["wsSettings"] = {"path": path or "/", "headers": {"Host": host} if host else {}}
+        ws_settings = {"path": path or "/"}
+        if host:
+            ws_settings["headers"] = {"Host": host}
+        settings["wsSettings"] = ws_settings
     if network == "grpc":
         settings["grpcSettings"] = {"serviceName": service_name or (path.lstrip("/") if path else "")}
     return settings

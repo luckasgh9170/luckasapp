@@ -56,6 +56,7 @@ class BackgroundServiceRuntime:
             await self._health_check()
             self._last_health = now
         self._cleanup_cache()
+        self._cleanup_failed_configs()
         stats = self.db.config_stats()
         self.state.write(
             status="Running",
@@ -63,6 +64,16 @@ class BackgroundServiceRuntime:
             healthy=stats.get("ready", 0),
             service_interval_seconds=sync_interval,
         )
+
+    def _cleanup_failed_configs(self) -> None:
+        min_failures = max(1, int(self.settings.get("cleanup_min_failures", 5) or 5))
+        max_age_hours = max(1, int(self.settings.get("cleanup_max_age_hours", 48) or 48))
+        try:
+            removed = self.db.delete_failed_configs(min_failures=min_failures, max_age_hours=max_age_hours)
+            if removed > 0:
+                self.state.log("cleanup", f"Removed {removed} failed configs from database")
+        except Exception as exc:
+            self.state.log("cleanup_error", f"Failed to remove dead configs: {exc}")
 
     async def _sync_backend(self, force: bool) -> None:
         base_url = str(self.settings.get("github_distribution_base_url", "")).strip()

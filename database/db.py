@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import orjson
 from sqlalchemy import Boolean, Integer, String, Text, create_engine, func, select
@@ -236,6 +237,42 @@ class Database:
             if row is not None:
                 row.favorite = favorite
                 session.commit()
+
+    def delete_failed_configs(self, min_failures: int = 3, max_age_hours: int = 24) -> int:
+        failed_statuses = [
+            ConfigStatus.OFFLINE.value,
+            ConfigStatus.TIMEOUT.value,
+            ConfigStatus.INVALID.value,
+        ]
+        cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(ConfigRow).where(
+                    ConfigRow.status.in_(failed_statuses),
+                    ConfigRow.failure_count >= min_failures,
+                    ConfigRow.favorite.is_(False),
+                    ConfigRow.last_check_at <= cutoff,
+                )
+            ).all()
+            count = len(rows)
+            for row in rows:
+                session.delete(row)
+            session.commit()
+        return count
+
+    def count_by_status(self) -> dict[str, int]:
+        failed = [s.value for s in (ConfigStatus.OFFLINE, ConfigStatus.TIMEOUT, ConfigStatus.INVALID, ConfigStatus.UNSTABLE)]
+        ready = [s.value for s in (ConfigStatus.HEALTHY, ConfigStatus.WORKING, ConfigStatus.SLOW, ConfigStatus.ONLINE)]
+        with Session(self.engine) as session:
+            return {
+                "total": session.scalar(select(func.count()).select_from(ConfigRow)) or 0,
+                "ready": session.scalar(
+                    select(func.count()).select_from(ConfigRow).where(ConfigRow.status.in_(ready))
+                ) or 0,
+                "failed": session.scalar(
+                    select(func.count()).select_from(ConfigRow).where(ConfigRow.status.in_(failed))
+                ) or 0,
+            }
 
     def upsert_repositories(self, repositories: list[RepositoryDiscoveryResult]) -> int:
         count = 0

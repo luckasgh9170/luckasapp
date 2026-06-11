@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import socket
 import ssl
 import subprocess
@@ -17,6 +18,7 @@ import orjson
 from models.config import ConfigStatus, ProxyConfig
 from services.xray_exporter import export_xray_config
 
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, ProxyConfig], None]
 StageCallback = Callable[[ProxyConfig], None]
@@ -27,6 +29,8 @@ YOUTUBE_TARGETS = (
     "https://youtube.com/generate_204",
     "https://www.youtube.com/generate_204",
 )
+QUICK_CHECK_TIMEOUT = 6
+SSL_ERROR_RETRIES = 2
 
 
 class HealthChecker:
@@ -39,6 +43,79 @@ class HealthChecker:
         self.root = root
         self.timeout = timeout
         self.target_urls = target_urls
+        self._http_client: httpx.AsyncClient | None = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            limits = httpx.Limits(max_keepalive_connections=8, max_connections=32, keepalive_expiry=30)
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout),
+                follow_redirects=False,
+                limits=limits,
+            )
+        return self._http_client
+
+    async def quick_check(self, config: ProxyConfig) -> ProxyConfig:
+        config.last_check_at = _utc_now()
+        if not self._validate_format(config):
+            config.status = ConfigStatus.INVALID
+            config.status_detail = "Invalid URI or missing required fields"
+            config.score = 0
+            return config
+        if config.protocol not in CORE_EXPORT_PROTOCOLS:
+            config.status = ConfigStatus.UNKNOWN
+            config.status_detail = f"Protocol {config.protocol} not fully testable without core"
+            return config
+        if not await self._check_dns(config.host):
+            config.status = ConfigStatus.OFFLINE
+            config.status_detail = "DNS resolution failed"
+            config.failure_count += 1
+            config.score = score_config(config)
+            return config
+        connection_time = await self._tcp_time(config.host, config.port)
+        config.connection_time_ms = connection_time
+        if connection_time is None:
+            config.status = ConfigStatus.TIMEOUT
+            config.status_detail = "TCP connection timeout"
+            config.failure_count += 1
+            config.score = score_config(config)
+            return config
+        config.ping_ms = connection_time
+        security, sni = _security_hint(config)
+        handshake = None
+        if security in {"tls", "reality"}:
+            handshake = await self._tls_with_retry(config.host, config.port, sni or config.host)
+            if handshake is not None:
+                config.handshake_time_ms = handshake
+        if connection_time <= 500:
+            config.status = ConfigStatus.ONLINE
+        elif connection_time <= 2000:
+            config.status = ConfigStatus.ONLINE
+        else:
+            config.status = ConfigStatus.SLOW
+        config.status_detail = f"TCP {connection_time}ms" + (f" TLS {handshake}ms" if handshake else "")
+        config.success_count += 1
+        config.score = score_config(config)
+        return config
+
+    async def quick_check_many(
+        self,
+        configs: list[ProxyConfig],
+        limit: int = 8,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[ProxyConfig]:
+        sem = asyncio.Semaphore(limit)
+        async def check_one(config: ProxyConfig) -> ProxyConfig:
+            async with sem:
+                return await self.quick_check(config)
+        tasks = [check_one(c) for c in configs]
+        results: list[ProxyConfig] = []
+        for i, task in enumerate(asyncio.as_completed(tasks)):
+            checked = await task
+            results.append(checked)
+            if progress_callback:
+                progress_callback(i + 1, len(configs), checked)
+        return results
 
     async def check(self, config: ProxyConfig, stage_callback: StageCallback | None = None) -> ProxyConfig:
         config.last_check_at = _utc_now()
@@ -71,7 +148,7 @@ class HealthChecker:
         security, sni = _security_hint(config)
         if security in {"tls", "reality"}:
             self._stage(config, ConfigStatus.TESTING, "Checking TLS/Reality compatibility", stage_callback)
-            tls_time = await self._tls_time(config.host, config.port, sni or config.host)
+            tls_time = await self._tls_with_retry(config.host, config.port, sni or config.host)
             if tls_time is not None:
                 config.handshake_time_ms = tls_time
 
@@ -79,6 +156,16 @@ class HealthChecker:
         result = await self._check_youtube_via_core(config, stage_callback)
         self._finish(result, result.status, result.status_detail, stage_callback)
         return result
+
+    async def _tls_with_retry(self, host: str, port: int, server_hostname: str) -> int | None:
+        for attempt in range(SSL_ERROR_RETRIES + 1):
+            tls_time = await self._tls_time(host, port, server_hostname)
+            if tls_time is not None:
+                return tls_time
+            if attempt < SSL_ERROR_RETRIES:
+                logger.debug("TLS handshake failed for %s, retry %d/%d", host, attempt + 1, SSL_ERROR_RETRIES)
+                await asyncio.sleep(0.5)
+        return None
 
     async def _check_youtube_via_core(
         self,
@@ -118,17 +205,29 @@ class HealthChecker:
             self._stage(config, ConfigStatus.TESTING, "Checking website reachability", stage_callback)
             status_codes: list[int] = []
             response_times: list[int] = []
+            proxy_url = f"http://127.0.0.1:{http_port}"
+            limits = httpx.Limits(max_keepalive_connections=4, max_connections=8)
             async with httpx.AsyncClient(
-                proxy=f"http://127.0.0.1:{http_port}",
+                proxy=proxy_url,
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=False,
+                limits=limits,
             ) as client:
                 for target_url in self.target_urls:
                     self._stage(config, ConfigStatus.TESTING, f"Checking {target_url}", stage_callback)
-                    request_start = time.perf_counter()
-                    response = await client.get(target_url)
-                    response_times.append(int((time.perf_counter() - request_start) * 1000))
-                    status_codes.append(response.status_code)
+                    for attempt in range(2):
+                        try:
+                            request_start = time.perf_counter()
+                            response = await client.get(target_url)
+                            response_times.append(int((time.perf_counter() - request_start) * 1000))
+                            status_codes.append(response.status_code)
+                            break
+                        except (httpx.RemoteProtocolError, httpx.LocalProtocolError, httpx.ReadTimeout) as exc:
+                            if attempt == 0:
+                                logger.debug("Retry %s for %s: %s", target_url, config.name, exc)
+                                await asyncio.sleep(0.3)
+                                continue
+                            raise
 
             good_statuses = [code for code in status_codes if code < 500]
             if response_times:
@@ -153,6 +252,7 @@ class HealthChecker:
         except Exception as exc:
             config.status = ConfigStatus.OFFLINE
             config.status_detail = f"Validation failed: {exc.__class__.__name__}"
+            logger.debug("Health check error for %s: %s", config.name, exc)
         finally:
             if process:
                 await _terminate_process_tree(process)
@@ -256,6 +356,16 @@ class HealthChecker:
         config.score = score_config(config)
         if stage_callback:
             stage_callback(config)
+
+    def shutdown(self) -> None:
+        if self._http_client and not self._http_client.is_closed:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._http_client.aclose())
+            except Exception:
+                pass
 
     async def check_many(
         self,

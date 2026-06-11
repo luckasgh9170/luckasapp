@@ -5,8 +5,9 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import httpx
 import orjson
+
+from services.api_client import ApiClient, RetryPolicy
 
 
 class UpdateManager:
@@ -30,10 +31,8 @@ class UpdateManager:
         if not self.version_url:
             return {"status": "disabled", "update_available": False}
         local = self.local_version()
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            response = await client.get(self.version_url)
-            response.raise_for_status()
-            remote = response.json()
+        async with ApiClient(self.root, timeout=15, retry=RetryPolicy(attempts=3)) as client:
+            remote = await client.get_json(self.version_url)
         local_build = int(local.get("build", 0) or 0)
         remote_build = int(remote.get("build", 0) or 0)
         skipped = self._skipped_build()
@@ -53,17 +52,18 @@ class UpdateManager:
         if not download_url:
             return {"status": "no_asset", "message": "No download_url in version.json."}
         target = self.update_dir / Path(download_url.split("?", 1)[0]).name
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            response = await client.get(download_url)
-            response.raise_for_status()
-            target.write_bytes(response.content)
+        async with ApiClient(self.root, timeout=120, retry=RetryPolicy(attempts=3)) as client:
+            content = await client.get_bytes(download_url)
+            temp = target.with_suffix(target.suffix + ".tmp")
+            temp.write_bytes(content)
+            temp.replace(target)
         staged_dir = self.update_dir / "staged"
         if staged_dir.exists():
             shutil.rmtree(staged_dir)
         staged_dir.mkdir(parents=True, exist_ok=True)
         if target.suffix.lower() == ".zip":
             with zipfile.ZipFile(target) as archive:
-                archive.extractall(staged_dir)
+                _safe_extract_zip(archive, staged_dir)
         pending = {
             "status": "staged",
             "asset": str(target),
@@ -84,3 +84,12 @@ class UpdateManager:
             return int(orjson.loads(path.read_bytes()).get("build", -1))
         except Exception:
             return -1
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    root = destination.resolve()
+    for member in archive.infolist():
+        target = (destination / member.filename).resolve()
+        if not str(target).startswith(str(root)):
+            raise RuntimeError(f"Unsafe update archive path: {member.filename}")
+    archive.extractall(destination)

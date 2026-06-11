@@ -19,6 +19,7 @@ python main.py
 - GitHub-backed dataset metadata, 5-minute auto sync, auto-update check on startup, Update Now, Later and Skip Version actions
 - Native Windows background service for backend synchronization, local cache maintenance and health checks
 - Smart Connection Engine with ranked Quick Connect and post-connect DNS/TLS/route/outbound verification
+- Shared backend API client with retries, timeouts, circuit breaker and structured network logs
 - GitHub Actions workflows for CI, release packaging, changelog generation and version management
 - Async subscription collector and parser for `vmess`, `vless`, `trojan`, `ss`, `hysteria` and `tuic`
 - SQLite persistence via SQLAlchemy and local cache storage
@@ -126,6 +127,8 @@ The service writes status and logs here:
 ```text
 cache/service_status.json
 logs/service.log
+logs/network.jsonl
+logs/app.log
 ```
 
 Responsibilities:
@@ -136,6 +139,16 @@ Responsibilities:
 - perform async health checks
 - keep fast offline cache available for the UI
 - expose diagnostics for service/core/DNS/routing failures
+- retry temporary GitHub/API failures without blocking the UI
+- clean up old repeatedly failing non-favorite nodes
+
+## Technical audit
+
+The latest audit and implemented fixes are documented here:
+
+```text
+docs/TECHNICAL_AUDIT.md
+```
 
 GitHub dataset files are generated in `distribution/`:
 

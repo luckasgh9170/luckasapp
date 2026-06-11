@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -19,7 +20,7 @@ from services.collector import ConfigCollector
 from services.discovery import GitHubDiscoveryEngine, save_discovery_output
 from services.github_distribution import GitHubDistributionPublisher
 from services.github_sync import GitHubDatasetClient
-from services.health import HealthChecker, is_ready_status
+from services.health import HealthChecker, QUICK_CHECK_TIMEOUT, is_ready_status
 from services.history import HistoryStore
 from services.connection_verifier import verify_proxy_connection
 from services.service_state import ServiceStateStore
@@ -28,6 +29,9 @@ from services.traffic import TrafficMonitor
 from services.updater import UpdateManager
 from services.xray_exporter import export_xray_config
 from workers.async_runner import AsyncRunner
+
+logger = logging.getLogger(__name__)
+MAX_FAILOVER_ATTEMPTS = 3
 
 
 class AppBridge(QObject):
@@ -50,7 +54,7 @@ class AppBridge(QObject):
         self.root = root
         self.db = Database(root)
         self.sources = SourceRepository(root)
-        self.collector = ConfigCollector()
+        self.collector = ConfigCollector(root)
         self.health = HealthChecker(root=root)
         self.runner = AsyncRunner()
         self.core = CoreManager(root)
@@ -74,6 +78,7 @@ class AppBridge(QObject):
         self._connection_mode = "disconnected"
         self._proxy_status = "disabled"
         self._vpn_status = "disabled"
+        self._failover_config_ids: list[str] = []
         self._diagnostics = {
             "dns_status": "Unknown",
             "tls_status": "Unknown",
@@ -110,10 +115,24 @@ class AppBridge(QObject):
         self._sync_timer = QTimer(self)
         self._sync_timer.timeout.connect(self.autoSyncFromGitHub)
         self._configure_sync_timer()
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.setInterval(5 * 60 * 1000)
+        self._cleanup_timer.timeout.connect(self._cleanup_failed_configs)
+        self._cleanup_timer.start()
         if self.settings.get("auto_sync", True):
             QTimer.singleShot(900, self.autoSyncFromGitHub)
         if self.settings.get("auto_update", True):
             QTimer.singleShot(1600, self.checkForUpdates)
+
+    def _cleanup_failed_configs(self) -> None:
+        try:
+            removed = self.db.delete_failed_configs(min_failures=5, max_age_hours=48)
+            if removed > 0:
+                logger.info("Auto-removed %d failed configs from database", removed)
+                self.configsChanged.emit()
+                self.statsChanged.emit()
+        except Exception as exc:
+            logger.warning("Failed to cleanup configs: %s", exc)
 
     @Property(bool, notify=busyChanged)
     def busy(self) -> bool:
@@ -235,26 +254,27 @@ class AppBridge(QObject):
     @Slot(result="QVariantList")
     def configList(self) -> list[dict]:
         items: list[dict] = []
-        configs = [config for config in self.db.list_configs(limit=1000) if is_ready_status(config.status.value)]
+        configs = [c for c in self.db.list_configs(limit=1000) if is_ready_status(c.status.value)]
         configs.sort(key=_smart_rank_key)
         for config in configs[:120]:
             data = config.model_dump(mode="json", exclude={"raw"})
-            data["ready"] = is_ready_status(data["status"])
+            data["ready"] = True
             data["quality"] = _quality_label(float(data.get("score", 0)))
+            data["ping_ms"] = config.ping_ms or config.response_time_ms
             items.append(data)
         return items
 
     @Slot(result="QVariantList")
     def favoriteList(self) -> list[dict]:
         items: list[dict] = []
-        configs = [config for config in self.db.list_configs(limit=1000) if config.favorite and is_ready_status(config.status.value)]
+        configs = [c for c in self.db.list_configs(limit=1000) if c.favorite and is_ready_status(c.status.value)]
         configs.sort(key=_smart_rank_key)
         for config in configs:
-            if config.favorite:
-                data = config.model_dump(mode="json", exclude={"raw"})
-                data["ready"] = is_ready_status(data["status"])
-                data["quality"] = _quality_label(float(data.get("score", 0)))
-                items.append(data)
+            data = config.model_dump(mode="json", exclude={"raw"})
+            data["ready"] = True
+            data["quality"] = _quality_label(float(data.get("score", 0)))
+            data["ping_ms"] = config.ping_ms or config.response_time_ms
+            items.append(data)
         return items
 
     @Slot(result="QVariantList")
@@ -371,14 +391,44 @@ class AppBridge(QObject):
                 added = self.db.upsert_configs(configs)
                 self.notification.emit(f"Collected {len(configs)} configs, {added} new.")
                 self._finish_progress("Refresh finished")
+                self.configsChanged.emit()
+                self.statsChanged.emit()
+                if configs:
+                    self._auto_validate_new_configs(configs)
             except Exception as exc:
                 self.notification.emit(f"Refresh failed: {exc}")
+                self._set_busy(False)
+
+        future.add_done_callback(done)
+
+    def _auto_validate_new_configs(self, configs: list) -> None:
+        self._start_progress("Pinging new nodes", len(configs), "Quick connectivity check")
+        health = HealthChecker(root=self.root, timeout=QUICK_CHECK_TIMEOUT)
+        limit = min(int(self.settings.get("validation_workers", 8)), 16)
+        future = self.runner.submit(health.quick_check_many(configs, limit=limit, progress_callback=self._on_quick_progress))
+
+        def done(_future) -> None:
+            try:
+                checked = _future.result()
+                self.db.upsert_configs(checked)
+                ready = sum(1 for c in checked if is_ready_status(c.status.value))
+                self.notification.emit(f"Ping done: {ready}/{len(checked)} nodes online")
+                self._finish_progress(f"{ready}/{len(checked)} online")
+            except Exception as exc:
+                logger.warning("Quick ping failed: %s", exc)
+                self._finish_progress("Ping completed with errors")
             finally:
                 self._set_busy(False)
                 self.configsChanged.emit()
                 self.statsChanged.emit()
 
         future.add_done_callback(done)
+
+    def _on_quick_progress(self, done: int, total: int, config) -> None:
+        ping = f"{config.ping_ms}ms" if config.ping_ms is not None else config.status.value
+        self._update_progress(done, total, f"{config.name} - {ping}")
+        if done % 5 == 0 or done == total:
+            self.configsChanged.emit()
 
     @Slot()
     def scanUpdates(self) -> None:
@@ -410,20 +460,32 @@ class AppBridge(QObject):
                 self._sync_status = {"status": "complete", **result}
                 if result.get("skipped"):
                     message = "GitHub dataset is already current."
+                    self.notification.emit(message)
+                    self._finish_progress("GitHub dataset current")
+                    self._set_busy(False)
                 else:
                     message = f"SCAN complete: {result['new_records']} new records."
-                if user_visible or int(result.get("new_records", 0) or 0) > 0:
                     self.notification.emit(message)
-                self._finish_progress("GitHub dataset merged")
+                    self._finish_progress("GitHub dataset merged")
+                    new_count = int(result.get("new_records", 0) or 0)
+                    if new_count > 0:
+                        self.configsChanged.emit()
+                        self.statsChanged.emit()
+                        self._auto_validate_new_configs(self.db.list_configs(limit=new_count))
+                    else:
+                        self._set_busy(False)
+                if user_visible or int(result.get("new_records", 0) or 0) > 0:
+                    pass
             except Exception as exc:
                 self._sync_status["status"] = "failed"
                 if user_visible:
                     self.notification.emit(f"SCAN failed: {exc}")
-            finally:
                 self._set_busy(False)
+            finally:
                 self.syncChanged.emit()
-                self.configsChanged.emit()
-                self.statsChanged.emit()
+                if not self._busy:
+                    self.configsChanged.emit()
+                    self.statsChanged.emit()
 
         future.add_done_callback(done)
 
@@ -703,41 +765,64 @@ class AppBridge(QObject):
     def connectConfig(self, config_id: str) -> None:
         self._connect_config(config_id, "proxy")
 
-    def _connect_config(self, config_id: str, mode: str) -> None:
+    def _connect_config(self, config_id: str, mode: str, is_failover: bool = False) -> None:
         config = self.db.get_config(config_id)
         if config is None:
-            self.notification.emit("Config not found.")
+            if is_failover:
+                self._try_failover()
+            else:
+                self.notification.emit("Config not found.")
             return
         if not is_ready_status(config.status.value):
-            self.notification.emit("This node is not Ready yet. Run validation or retest it first.")
+            if is_failover:
+                self._try_failover()
+            else:
+                self.notification.emit("This node is not Ready yet. Run validation or retest it first.")
             return
         self._set_connection_state("Connecting")
-        try:
-            config_path = export_xray_config(
-                config,
-                self.root / "cache" / "active-xray.json",
-                socks_port=int(self.settings.get("socks_port", 10808)) if self.settings.get("enable_socks", True) else None,
-                http_port=int(self.settings.get("http_port", 10809)) if self.settings.get("enable_http", True) else None,
-            )
-        except Exception as exc:
-            self.notification.emit(f"Connect export failed: {exc}")
-            return
         self._set_busy(True)
         self._start_progress(f"Connecting {mode.upper()}", 0, config.name)
         self._current_config_id = config.id
         http_port = int(self.settings.get("http_port", 10809))
+        config_to_try = config
 
         async def start_and_verify() -> dict:
+            try:
+                config_path = export_xray_config(
+                    config,
+                    self.root / "cache" / "active-xray.json",
+                    socks_port=int(self.settings.get("socks_port", 10808)) if self.settings.get("enable_socks", True) else None,
+                    http_port=http_port if self.settings.get("enable_http", True) else None,
+                    dns_server=str(self.settings.get("dns_server", "1.1.1.1")),
+                    prefer_ipv6=bool(self.settings.get("ipv6", False)),
+                )
+            except Exception as exc:
+                return {"message": f"Connect export failed: {exc}", "verification": {"status": "Failed", "last_error": str(exc)}}
             message = await self.core.start(config_path)
             if "started" not in message.lower():
                 return {"message": message, "verification": {"status": "Failed", "last_error": message}}
             self._set_connection_state("Verifying")
-            verification = await verify_proxy_connection(http_port, timeout=float(self.settings.get("validation_timeout", 8)))
-            return {"message": message, "verification": verification}
+            for attempt in range(3):
+                try:
+                    verification = await verify_proxy_connection(
+                        http_port,
+                        timeout=float(self.settings.get("validation_timeout", 8)),
+                    )
+                    if verification.get("status") == "Connected":
+                        return {"message": message, "verification": verification}
+                    if attempt < 2:
+                        await asyncio.sleep(1.0)
+                except Exception as exc:
+                    if attempt < 2:
+                        await asyncio.sleep(1.0)
+                        continue
+                    return {"message": message, "verification": {"status": "Failed", "last_error": str(exc)}}
+            return {"message": message, "verification": {"status": "Failed", "last_error": "Verification failed after retries"}}
 
         future = self.runner.submit(start_and_verify())
 
         def done(_future) -> None:
+            nonlocal config_to_try
             try:
                 result = _future.result()
                 message = result.get("message", "")
@@ -745,27 +830,50 @@ class AppBridge(QObject):
                 self._diagnostics.update(verification)
                 self.notification.emit(message)
                 if "started" in message.lower() and verification.get("status") == "Connected":
-                    self._set_current_server(config.name)
+                    self._set_current_server(config_to_try.name)
                     self._set_connection_mode(mode)
                     self._set_connection_state("Connected")
                     self._proxy_status = "enabled" if mode in {"proxy", "smart"} else self._proxy_status
+                    if self.settings.get("set_system_proxy_on_connect", False):
+                        self.proxy.set_mode("proxy", "127.0.0.1", http_port)
                     self.connectionModeChanged.emit()
                     self.traffic.start_session()
-                    self.history.add("connect", {"mode": mode, "config_id": config.id, "name": config.name, "protocol": config.protocol})
-                    self.notification.emit(f"Connected and verified: {config.name}")
+                    self.history.add("connect", {"mode": mode, "config_id": config_to_try.id, "name": config_to_try.name, "protocol": config_to_try.protocol})
+                    self.notification.emit(f"Connected and verified: {config_to_try.name}")
+                    self._failover_config_ids = []
                 else:
                     self._set_connection_state("Failed")
                     self._set_current_server("Disconnected")
-                    self.history.add("connect_failed", {"mode": mode, "config_id": config.id, "name": config.name, "error": verification.get("last_error", message)})
+                    error_msg = verification.get("last_error", message)
+                    self.history.add("connect_failed", {"mode": mode, "config_id": config_to_try.id, "name": config_to_try.name, "error": error_msg})
+                    if is_failover or mode == "smart":
+                        self._try_failover()
                 self._finish_progress(message)
             except Exception as exc:
                 self._set_connection_state("Failed")
                 self._diagnostics["last_error"] = str(exc)
                 self.notification.emit(f"Connect failed: {exc}")
+                if is_failover or mode == "smart":
+                    self._try_failover()
             finally:
                 self._set_busy(False)
 
         future.add_done_callback(done)
+
+    def _try_failover(self) -> None:
+        if not self._failover_config_ids:
+            ready = [c for c in self.db.list_configs(limit=1000) if is_ready_status(c.status.value) and c.id != self._current_config_id]
+            ready.sort(key=_smart_rank_key)
+            self._failover_config_ids = [c.id for c in ready[:MAX_FAILOVER_ATTEMPTS]]
+        if self._failover_config_ids:
+            next_id = self._failover_config_ids.pop(0)
+            logger.info("Failover: trying next node %s", next_id)
+            self.notification.emit(f"Failover: trying next healthy node...")
+            self._connect_config(next_id, self._connection_mode if self._connection_mode != "disconnected" else "proxy", is_failover=True)
+        else:
+            self.notification.emit("No more nodes to failover to.")
+            self._set_connection_state("Disconnected")
+            self._set_connection_mode("disconnected")
 
     @Slot()
     def enableProxy(self) -> None:
@@ -797,6 +905,7 @@ class AppBridge(QObject):
             self.notification.emit("No Ready node found. Start Live Validate first.")
             return
         ready.sort(key=_smart_rank_key)
+        self._failover_config_ids = [c.id for c in ready[1:MAX_FAILOVER_ATTEMPTS + 1]]
         self._connect_config(ready[0].id, "smart")
 
     @Slot()
@@ -804,6 +913,7 @@ class AppBridge(QObject):
         self._set_busy(True)
         self._set_connection_state("Disconnecting")
         self._start_progress("Disconnecting", 0, self._current_server)
+        self._failover_config_ids = []
         future = self.runner.submit(self.core.stop())
 
         def done(_future) -> None:
@@ -813,6 +923,8 @@ class AppBridge(QObject):
                 self._set_connection_mode("disconnected")
                 self._set_connection_state("Disconnected")
                 self._proxy_status = "disabled"
+                if self.settings.get("set_system_proxy_on_connect", False):
+                    self.proxy.disable()
                 self.traffic.stop_session()
                 if self._current_config_id:
                     self.history.add("disconnect", {"config_id": self._current_config_id})
@@ -834,7 +946,7 @@ class AppBridge(QObject):
 
     @Slot(str)
     def setProxyMode(self, mode: str) -> None:
-        self.notification.emit(self.proxy.set_mode(mode))
+        self.notification.emit(self.proxy.set_mode(mode, "127.0.0.1", int(self.settings.get("http_port", 10809))))
 
     @Slot(str)
     def runNetworkTool(self, tool: str) -> None:

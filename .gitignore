@@ -3,7 +3,10 @@ __pycache__/
 *.pyc
 *.db
 logs/*.log
+logs/*
+!logs/.gitkeep
 release/
+dist/
 cache/*
 !cache/.gitkeep
 core/bin/*

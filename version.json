@@ -1,8 +1,8 @@
 {
-  "version": "1.1.1",
-  "build": 102,
-  "updated_at": "2026-06-10T08:07:04Z",
-  "release_notes": "Fix Windows Service native host startup and background service installer.",
+  "version": "1.2.0",
+  "build": 103,
+  "updated_at": "2026-06-11T10:47:38Z",
+  "release_notes": "Production hardening: resilient API client, secure TLS verification, atomic GitHub sync cache, safe updater extraction, Windows system proxy control, non-blocking connection export, failover, diagnostics, and technical audit report.",
   "owner": "luckasgh9170",
   "repository": "luckasapp",
   "download_url": "https://github.com/luckasgh9170/luckasapp/releases/latest/download/LuckasApp-windows.zip",
