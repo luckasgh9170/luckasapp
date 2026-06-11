@@ -73,10 +73,18 @@ class ApiClient:
         self.retry = retry or RetryPolicy()
         self.breaker = circuit_breaker or CircuitBreaker()
         self.logger = JsonlNetworkLogger(root)
+        default_headers = {
+            "User-Agent": "LuckasApp",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
+        if headers:
+            default_headers.update(headers)
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             follow_redirects=True,
-            headers=headers,
+            headers=default_headers,
+            trust_env=False,
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=12, keepalive_expiry=30),
         )
 

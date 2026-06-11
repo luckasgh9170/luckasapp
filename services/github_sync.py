@@ -24,6 +24,10 @@ class GitHubDatasetClient:
             raise RuntimeError("Set github_distribution_base_url in Settings first.")
         async with ApiClient(self.root, timeout=20, retry=RetryPolicy(attempts=4)) as client:
             version = await client.get_json(f"{self.base_url}/version.json")
+            metadata = await self._fetch_server_metadata(client)
+            if metadata:
+                version["processed_at"] = version.get("processed_at") or metadata.get("updated", "")
+                version["processed_servers"] = version.get("processed_servers") or metadata.get("processed_servers", 0)
             local_version = self._local_version()
             if not force and self._same_version(local_version, version) and self.index_cache.exists():
                 return {
@@ -144,6 +148,13 @@ class GitHubDatasetClient:
             "Processed server list is unavailable. "
             f"Backend pipeline must publish distribution/data/servers.json: {last_error}"
         )
+
+    async def _fetch_server_metadata(self, client: ApiClient) -> dict[str, Any]:
+        try:
+            payload = await client.get_json(f"{self.base_url}/data/server_metadata.json")
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
 
     @staticmethod
     def _same_version(local: dict, remote: dict) -> bool:
