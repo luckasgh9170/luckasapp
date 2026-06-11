@@ -51,6 +51,8 @@ class BackgroundServiceRuntime:
         stats = self.db.config_stats()
         self.state.write(
             status="Running",
+            last_health_check="",
+            last_health_ready=0,
             records=stats.get("total", 0),
             healthy=stats.get("ready", 0),
             service_interval_seconds=sync_interval,
@@ -80,6 +82,8 @@ class BackgroundServiceRuntime:
             self.state.write(
                 status="Running",
                 last_sync=utc_now(),
+                last_health_check="",
+                last_health_ready=0,
                 remote_version=result.get("remote_version", ""),
                 records=result.get("records", 0),
                 new_records=result.get("new_records", 0),
