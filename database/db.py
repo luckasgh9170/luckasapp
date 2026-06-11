@@ -110,7 +110,7 @@ class Database:
                 row.last_check_at = config.last_check_at
                 row.success_count = config.success_count
                 row.failure_count = config.failure_count
-                row.favorite = config.favorite
+                row.favorite = bool(row.favorite or config.favorite)
                 row.score = int(config.score)
             session.commit()
         return count
@@ -267,17 +267,55 @@ class Database:
         with Session(self.engine) as session:
             rows = session.scalars(select(ConfigRow).where(ConfigRow.id.in_(config_ids))).all()
             for row in rows:
-                row.status = ConfigStatus.OFFLINE.value
-                row.status_detail = "Removed from GitHub distribution"
-                row.ping_ms = None
-                row.connection_time_ms = None
-                row.handshake_time_ms = None
-                row.response_time_ms = None
-                row.last_check_at = now
-                row.failure_count = (row.failure_count or 0) + 1
-                row.score = 0
+                if row.favorite:
+                    row.status = ConfigStatus.OFFLINE.value
+                    row.status_detail = "Removed from GitHub distribution"
+                    row.ping_ms = None
+                    row.connection_time_ms = None
+                    row.handshake_time_ms = None
+                    row.response_time_ms = None
+                    row.last_check_at = now
+                    row.failure_count = (row.failure_count or 0) + 1
+                    row.score = 0
+                else:
+                    session.delete(row)
             session.commit()
             return len(rows)
+
+    def purge_remote_removed(self) -> int:
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(ConfigRow).where(
+                    ConfigRow.status_detail == "Removed from GitHub distribution",
+                    ConfigRow.favorite.is_(False),
+                )
+            ).all()
+            count = len(rows)
+            for row in rows:
+                session.delete(row)
+            session.commit()
+            return count
+
+    def prune_to_processed(self, active_ids: set[str]) -> int:
+        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        with Session(self.engine) as session:
+            rows = session.scalars(select(ConfigRow).where(~ConfigRow.id.in_(active_ids))).all()
+            count = len(rows)
+            for row in rows:
+                if row.favorite:
+                    row.status = ConfigStatus.OFFLINE.value
+                    row.status_detail = "Not present in processed GitHub server list"
+                    row.ping_ms = None
+                    row.connection_time_ms = None
+                    row.handshake_time_ms = None
+                    row.response_time_ms = None
+                    row.last_check_at = now
+                    row.failure_count = (row.failure_count or 0) + 1
+                    row.score = 0
+                else:
+                    session.delete(row)
+            session.commit()
+            return count
 
     def count_by_status(self) -> dict[str, int]:
         failed = [s.value for s in (ConfigStatus.OFFLINE, ConfigStatus.TIMEOUT, ConfigStatus.INVALID, ConfigStatus.UNSTABLE)]

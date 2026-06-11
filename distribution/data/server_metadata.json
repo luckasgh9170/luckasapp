@@ -1,0 +1,19 @@
+{
+  "updated": "2026-06-11T11:41:10Z",
+  "source": "local-cache",
+  "input_configs": 2,
+  "processed_servers": 2,
+  "healthy_servers": 2,
+  "status": "ready",
+  "ranking": [
+    "health",
+    "ping",
+    "stability",
+    "last_check"
+  ],
+  "client_policy": {
+    "client_side_bulk_validation": false,
+    "client_side_ranking": false,
+    "connect_time_light_verification": true
+  }
+}

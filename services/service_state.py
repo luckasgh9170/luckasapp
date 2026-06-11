@@ -26,6 +26,7 @@ class ServiceStateStore:
                 "updated_at": "",
                 "last_sync": "",
                 "last_health_check": "",
+                "last_processed_update": "",
                 "records": 0,
                 "healthy": 0,
                 "last_error": "",

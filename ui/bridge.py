@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
-from concurrent.futures import CancelledError
 import re
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
@@ -15,12 +13,10 @@ from PySide6.QtGui import QGuiApplication
 from core.core_manager import CoreManager
 from core.proxy_controller import ProxyController
 from database.db import Database
+from models.config import ConfigStatus
 from repositories.sources import SourceRepository
-from services.collector import ConfigCollector
-from services.discovery import GitHubDiscoveryEngine, save_discovery_output
 from services.github_distribution import GitHubDistributionPublisher
 from services.github_sync import GitHubDatasetClient
-from services.health import HealthChecker, QUICK_CHECK_TIMEOUT, is_ready_status
 from services.history import HistoryStore
 from services.connection_verifier import verify_proxy_connection
 from services.service_state import ServiceStateStore
@@ -32,6 +28,7 @@ from workers.async_runner import AsyncRunner
 
 logger = logging.getLogger(__name__)
 MAX_FAILOVER_ATTEMPTS = 3
+READY_STATUSES = {ConfigStatus.HEALTHY, ConfigStatus.WORKING, ConfigStatus.SLOW, ConfigStatus.ONLINE}
 
 
 class AppBridge(QObject):
@@ -54,8 +51,6 @@ class AppBridge(QObject):
         self.root = root
         self.db = Database(root)
         self.sources = SourceRepository(root)
-        self.collector = ConfigCollector(root)
-        self.health = HealthChecker(root=root)
         self.runner = AsyncRunner()
         self.core = CoreManager(root)
         self.proxy = ProxyController()
@@ -64,9 +59,6 @@ class AppBridge(QObject):
         self.traffic = TrafficMonitor(root)
         self._busy = False
         self._validation_running = False
-        self._validation_future: Any = None
-        self._validation_concurrency = 4
-        self._last_live_emit = 0.0
         self._progress_value = 0
         self._progress_total = 0
         self._progress_done = 0
@@ -187,11 +179,6 @@ class AppBridge(QObject):
             self._busy = value
             self.busyChanged.emit()
 
-    def _set_validation_running(self, value: bool) -> None:
-        if self._validation_running != value:
-            self._validation_running = value
-            self.validationRunningChanged.emit()
-
     def _set_current_server(self, value: str) -> None:
         if self._current_server != value:
             self._current_server = value
@@ -235,13 +222,6 @@ class AppBridge(QObject):
             self._progress_value = 100
         self._progress_detail = detail
         self.progressChanged.emit()
-
-    def _emit_live_update(self, force: bool = False) -> None:
-        now = time.monotonic()
-        if force or now - self._last_live_emit >= 0.25:
-            self._last_live_emit = now
-            self.configsChanged.emit()
-            self.statsChanged.emit()
 
     def _configure_sync_timer(self) -> None:
         interval_minutes = int(self.settings.get("sync_interval", 5) or 5)
@@ -337,7 +317,7 @@ class AppBridge(QObject):
             "service_status": service.get("status", "Stopped"),
             "service_last_error": service.get("last_error", ""),
             "service_last_sync": service.get("last_sync", ""),
-            "service_last_health_check": service.get("last_health_check", ""),
+            "service_last_processed_update": service.get("last_processed_update", ""),
             "core_running": core.get("running", False),
             "core_version": core.get("version", "Unknown"),
             "core_memory": core.get("memoryText", "0 B"),
@@ -360,16 +340,6 @@ class AppBridge(QObject):
     @Slot(str, "QVariant")
     def setSetting(self, key: str, value: Any) -> None:
         self.settings.set(key, value)
-        if key == "validation_workers":
-            try:
-                self._validation_concurrency = max(1, int(value))
-            except Exception:
-                pass
-        if key == "validation_timeout":
-            try:
-                self.health.timeout = max(2, float(value))
-            except Exception:
-                pass
         if key in {"auto_sync", "sync_interval"}:
             self._configure_sync_timer()
         self.settingsChanged.emit()
@@ -377,58 +347,7 @@ class AppBridge(QObject):
 
     @Slot()
     def refreshConfigs(self) -> None:
-        urls = self.sources.list()
-        if not urls:
-            self.notification.emit("Add a subscription or raw URL first.")
-            return
-        self._set_busy(True)
-        self._start_progress("Refreshing subscriptions", len(urls), "Downloading source lists")
-        future = self.runner.submit(self.collector.collect(urls))
-
-        def done(_future) -> None:
-            try:
-                configs = _future.result()
-                added = self.db.upsert_configs(configs)
-                self.notification.emit(f"Collected {len(configs)} configs, {added} new.")
-                self._finish_progress("Refresh finished")
-                self.configsChanged.emit()
-                self.statsChanged.emit()
-                if configs:
-                    self._auto_validate_new_configs(configs)
-            except Exception as exc:
-                self.notification.emit(f"Refresh failed: {exc}")
-                self._set_busy(False)
-
-        future.add_done_callback(done)
-
-    def _auto_validate_new_configs(self, configs: list) -> None:
-        self._start_progress("Pinging new nodes", len(configs), "Quick connectivity check")
-        health = HealthChecker(root=self.root, timeout=QUICK_CHECK_TIMEOUT)
-        limit = min(int(self.settings.get("validation_workers", 8)), 16)
-        future = self.runner.submit(health.quick_check_many(configs, limit=limit, progress_callback=self._on_quick_progress))
-
-        def done(_future) -> None:
-            try:
-                checked = _future.result()
-                self.db.upsert_configs(checked)
-                ready = sum(1 for c in checked if is_ready_status(c.status.value))
-                self.notification.emit(f"Ping done: {ready}/{len(checked)} nodes online")
-                self._finish_progress(f"{ready}/{len(checked)} online")
-            except Exception as exc:
-                logger.warning("Quick ping failed: %s", exc)
-                self._finish_progress("Ping completed with errors")
-            finally:
-                self._set_busy(False)
-                self.configsChanged.emit()
-                self.statsChanged.emit()
-
-        future.add_done_callback(done)
-
-    def _on_quick_progress(self, done: int, total: int, config) -> None:
-        ping = f"{config.ping_ms}ms" if config.ping_ms is not None else config.status.value
-        self._update_progress(done, total, f"{config.name} - {ping}")
-        if done % 5 == 0 or done == total:
-            self.configsChanged.emit()
+        self.notification.emit("Client-side source refresh is disabled. Backend pipeline publishes processed servers to GitHub.")
 
     @Slot()
     def scanUpdates(self) -> None:
@@ -468,7 +387,8 @@ class AppBridge(QObject):
                         "SCAN complete: "
                         f"{int(result.get('new_records', 0) or 0)} new, "
                         f"{int(result.get('modified_records', 0) or 0)} modified, "
-                        f"{int(result.get('removed_records', 0) or 0)} removed."
+                        f"{int(result.get('removed_records', 0) or 0)} removed, "
+                        f"{int(result.get('purged_records', 0) or 0)} purged."
                     )
                     self.notification.emit(message)
                     self._finish_progress("GitHub dataset merged")
@@ -476,9 +396,7 @@ class AppBridge(QObject):
                     if new_count > 0:
                         self.configsChanged.emit()
                         self.statsChanged.emit()
-                        self._auto_validate_new_configs(self.db.list_configs(limit=new_count))
-                    else:
-                        self._set_busy(False)
+                    self._set_busy(False)
                 if user_visible or int(result.get("new_records", 0) or 0) > 0:
                     pass
             except Exception as exc:
@@ -579,130 +497,27 @@ class AppBridge(QObject):
 
     @Slot()
     def discoverSources(self) -> None:
-        self._set_busy(True)
-        self._start_progress("Discovering repositories", 0, "Mining GitHub raw sources")
-        engine = GitHubDiscoveryEngine(self.root, max_repos=40)
-        future = self.runner.submit(engine.discover(limit=25))
-
-        def done(_future) -> None:
-            try:
-                repositories = _future.result()
-                self.db.upsert_repositories(repositories)
-                output_path = save_discovery_output(self.root, repositories)
-                raw_urls = [url for repository in repositories for url in repository.raw_urls]
-                self.sources.extend(raw_urls)
-                self.notification.emit(f"Discovered {len(repositories)} repos and {len(raw_urls)} raw URLs.")
-                self.notification.emit(f"Saved discovery output: {output_path.name}")
-                self._finish_progress("Discovery finished")
-            except Exception as exc:
-                self.notification.emit(f"Discovery failed: {exc}")
-            finally:
-                self._set_busy(False)
-                self.sourcesChanged.emit()
-                self.statsChanged.emit()
-
-        future.add_done_callback(done)
+        self.notification.emit("Repository discovery runs in the backend pipeline, not on the desktop client.")
 
     @Slot()
     def testAll(self) -> None:
-        self.startValidation()
+        self.notification.emit("Bulk validation runs in the GitHub backend pipeline. Use SCAN to sync processed healthy servers.")
 
     @Slot()
     def startValidation(self) -> None:
-        if self._validation_running:
-            self.notification.emit("Validation is already running.")
-            return
-        configs = self.db.list_configs()
-        if not configs:
-            self.notification.emit("No configs to test.")
-            return
-        self._set_validation_running(True)
-        self._validation_concurrency = int(self.settings.get("validation_workers", self._validation_concurrency))
-        self.health.timeout = float(self.settings.get("validation_timeout", self.health.timeout))
-        self._start_progress("Live validation on YouTube", len(configs), "Starting validation queue")
-
-        def progress(done: int, total: int, config) -> None:
-            ping = f"{config.ping_ms} ms" if config.ping_ms is not None else config.status.value
-            self._update_progress(done, total, f"{config.name} - {ping}")
-
-        def stage(config) -> None:
-            self.db.upsert_configs([config])
-            ready = is_ready_status(config.status.value)
-            if ready:
-                ping = f"{config.ping_ms} ms" if config.ping_ms is not None else "ready"
-                self.notification.emit(f"Ready: {config.name} ({ping})")
-            self._emit_live_update(force=ready or config.status.value in {"offline", "timeout", "invalid", "unstable"})
-
-        self._validation_future = self.runner.submit(
-            self.health.check_many(
-                configs,
-                limit=self._validation_concurrency,
-                progress_callback=progress,
-                stage_callback=stage,
-            )
-        )
-
-        def done(_future) -> None:
-            try:
-                checked = _future.result()
-                self.db.upsert_configs(checked)
-                self.notification.emit("Live validation cycle finished.")
-                self._finish_progress("All configs tested against YouTube")
-            except (asyncio.CancelledError, CancelledError):
-                self.notification.emit("Validation stopped.")
-                self._finish_progress("Validation stopped")
-            except Exception as exc:
-                self.notification.emit(f"Validation failed: {exc}")
-            finally:
-                self._validation_future = None
-                self._set_validation_running(False)
-                self.configsChanged.emit()
-                self.statsChanged.emit()
-
-        self._validation_future.add_done_callback(done)
+        self.notification.emit("Client-side validation is disabled. Backend publishes preprocessed ping and health scores.")
 
     @Slot()
     def stopValidation(self) -> None:
-        if self._validation_future is None:
-            self.notification.emit("Validation is not running.")
-            return
-        self._validation_future.cancel()
+        self.notification.emit("No client-side validation task is running.")
 
     @Slot(str)
     def testConfig(self, config_id: str) -> None:
-        if self._validation_running:
-            self.notification.emit("Stop live validation before retesting one config.")
-            return
         config = self.db.get_config(config_id)
         if config is None:
             self.notification.emit("Config not found.")
             return
-        self._set_validation_running(True)
-        self._start_progress("Testing selected config on YouTube", 1, config.name)
-        future = self.runner.submit(
-            self.health.check_many(
-                [config],
-                progress_callback=lambda done, total, item: self._update_progress(done, total, item.name),
-                stage_callback=lambda item: (self.db.upsert_configs([item]), self.configsChanged.emit(), self.statsChanged.emit()),
-            )
-        )
-
-        def done(_future) -> None:
-            try:
-                checked = _future.result()
-                self.db.upsert_configs(checked)
-                result = checked[0]
-                ping = f"{result.ping_ms} ms" if result.ping_ms is not None else result.status.value
-                self.notification.emit(f"{result.name}: {ping}")
-                self._finish_progress("Selected config tested")
-            except Exception as exc:
-                self.notification.emit(f"Config test failed: {exc}")
-            finally:
-                self._set_validation_running(False)
-                self.configsChanged.emit()
-                self.statsChanged.emit()
-
-        future.add_done_callback(done)
+        self.notification.emit(f"{config.name}: backend ping={config.ping_ms or '--'} ms, score={int(config.score)}")
 
     @Slot(str)
     def deleteConfig(self, config_id: str) -> None:
@@ -782,7 +597,7 @@ class AppBridge(QObject):
             if is_failover:
                 self._try_failover()
             else:
-                self.notification.emit("This node is not Ready yet. Run validation or retest it first.")
+                self.notification.emit("This node is not in the processed healthy list. Run SCAN to sync GitHub servers.")
             return
         self._set_connection_state("Connecting")
         self._set_busy(True)
@@ -811,7 +626,7 @@ class AppBridge(QObject):
                 try:
                     verification = await verify_proxy_connection(
                         http_port,
-                        timeout=float(self.settings.get("validation_timeout", 8)),
+                        timeout=float(self.settings.get("connection_verification_timeout", 8)),
                     )
                     if verification.get("status") == "Connected":
                         return {"message": message, "verification": verification}
@@ -907,7 +722,7 @@ class AppBridge(QObject):
     def smartConnect(self) -> None:
         ready = [config for config in self.db.list_configs(limit=1000) if is_ready_status(config.status.value)]
         if not ready:
-            self.notification.emit("No Ready node found. Start Live Validate first.")
+            self.notification.emit("No processed healthy node found. Run SCAN after backend processing completes.")
             return
         ready.sort(key=_smart_rank_key)
         self._failover_config_ids = [c.id for c in ready[1:MAX_FAILOVER_ATTEMPTS + 1]]
@@ -956,8 +771,8 @@ class AppBridge(QObject):
     @Slot(str)
     def runNetworkTool(self, tool: str) -> None:
         labels = {
-            "ping": "Ping check queued for youtube.com.",
-            "dns": "DNS check uses the validation engine cache path for youtube.com.",
+            "ping": "Bulk ping runs in the backend pipeline. Connect-time verification is still enabled.",
+            "dns": "DNS verification runs only during active connection checks.",
             "route": "Route check is available through the active Xray proxy route.",
         }
         self.notification.emit(labels.get(tool, "Network tool queued."))
@@ -1084,6 +899,13 @@ def _quality_label(score: float) -> str:
     if score >= 45:
         return "Average"
     return "Poor"
+
+
+def is_ready_status(status: str) -> bool:
+    try:
+        return ConfigStatus(status) in READY_STATUSES
+    except Exception:
+        return False
 
 
 def _smart_rank_key(config) -> tuple:

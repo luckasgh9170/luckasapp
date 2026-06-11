@@ -9,6 +9,8 @@ class DatasetRecord(BaseModel):
     protocol: str
     server: str
     port: int
+    country: str = "Unknown"
+    isp: str = "Unknown"
     uuid: str = ""
     transport: str = ""
     security: str = ""
@@ -22,6 +24,12 @@ class DatasetRecord(BaseModel):
     message_date: str = ""
     created_at: str = ""
     updated_at: str = ""
+    ping: int | None = None
+    health: int = 0
+    stability: int = 0
+    score: int = 0
+    status: str = "unknown"
+    last_check: str = ""
     raw: str
 
 

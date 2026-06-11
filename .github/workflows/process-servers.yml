@@ -1,0 +1,47 @@
+name: Process Healthy Servers
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Maximum raw configs to validate"
+        required: false
+        default: "1000"
+  schedule:
+    - cron: "17 */6 * * *"
+
+jobs:
+  process:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Download Xray and V2Ray cores
+        shell: pwsh
+        run: .\scripts\download_cores.ps1
+      - name: Validate and rank servers
+        shell: pwsh
+        run: |
+          $limit = "${{ github.event.inputs.limit }}"
+          if ([string]::IsNullOrWhiteSpace($limit)) { $limit = "1000" }
+          python .\scripts\process_server_health.py --workers 16 --timeout 8 --limit $limit
+      - name: Commit processed server list
+        shell: pwsh
+        run: |
+          git config user.name "luckasapp-server-processor"
+          git config user.email "actions@users.noreply.github.com"
+          git add distribution/data/servers.json distribution/data/healthy.json distribution/data/server_metadata.json distribution/version.json
+          if (git diff --cached --quiet) {
+            Write-Host "No processed server changes."
+          } else {
+            git commit -m "Auto process healthy server list"
+            git push
+          }

@@ -651,7 +651,7 @@ ApplicationWindow {
                                     spacing: 12
                                     Text {
                                         Layout.fillWidth: true
-                                        text: "The app loads cache immediately. Use SCAN and Validate while the background service keeps checking nodes."
+                                        text: "The app loads cache immediately. SCAN downloads preprocessed healthy servers from GitHub."
                                         color: theme.muted
                                         font.pixelSize: 13
                                         wrapMode: Text.WordWrap
@@ -867,10 +867,8 @@ ApplicationWindow {
                                 content: Component {
                                     ColumnLayout {
                                         spacing: 12
-                                        InfoLine { label: "Concurrent Workers"; value: String(settings.validation_workers || 4) }
-                                        Slider { Layout.fillWidth: true; from: 1; to: 32; stepSize: 1; value: settings.validation_workers || 4; onMoved: appBridge.setSetting("validation_workers", Math.round(value)) }
-                                        InfoLine { label: "Service Batch"; value: String(settings.service_health_batch || 24) }
-                                        Slider { Layout.fillWidth: true; from: 4; to: 128; stepSize: 4; value: settings.service_health_batch || 24; onMoved: appBridge.setSetting("service_health_batch", Math.round(value)) }
+                                        InfoLine { label: "Mode"; value: settings.processed_servers_only === false ? "Legacy" : "Processed Servers" }
+                                        InfoLine { label: "Client Validation"; value: settings.client_side_validation ? "Enabled" : "Disabled" }
                                         InfoLine { label: "Cache Size"; value: String(settings.cache_size_mb || 512) + " MB" }
                                     }
                                 }
@@ -886,7 +884,7 @@ ApplicationWindow {
                                         spacing: 12
                                         InfoLine { label: "Service Status"; value: service.status || "Stopped" }
                                         InfoLine { label: "Last Sync"; value: service.last_sync || "Never" }
-                                        InfoLine { label: "Last Health"; value: service.last_health_check || "Never" }
+                                        InfoLine { label: "Processed Update"; value: service.last_processed_update || "Never" }
                                         InfoLine { label: "Last Error"; value: service.last_error || "" }
                                         GridLayout {
                                             Layout.fillWidth: true

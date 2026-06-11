@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
 from database.db import Database
 from services.github_sync import GitHubDatasetClient
-from services.health import HealthChecker, is_ready_status
 from services.service_state import ServiceStateStore, utc_now
 from services.settings import SettingsStore
 
@@ -19,9 +17,7 @@ class BackgroundServiceRuntime:
         self.settings = SettingsStore(root)
         self.db = Database(root)
         self.state = ServiceStateStore(root)
-        self.health = HealthChecker(root=root, timeout=float(self.settings.get("validation_timeout", 8)))
         self._last_sync = 0.0
-        self._last_health = 0.0
 
     async def run_forever(self, stop_event: Event | None = None) -> None:
         self.state.write(status="Running", last_error="")
@@ -41,20 +37,15 @@ class BackgroundServiceRuntime:
     async def run_once(self) -> None:
         self.state.write(status="Running", last_error="")
         await self._sync_backend(force=True)
-        await self._health_check()
         self._cleanup_cache()
         self.state.write(status="Stopped")
 
     async def run_cycle(self) -> None:
         now = time.monotonic()
         sync_interval = max(1, int(self.settings.get("sync_interval", 5) or 5)) * 60
-        health_interval = max(1, int(self.settings.get("service_health_interval", 5) or 5)) * 60
         if now - self._last_sync >= sync_interval:
             await self._sync_backend(force=False)
             self._last_sync = now
-        if now - self._last_health >= health_interval:
-            await self._health_check()
-            self._last_health = now
         self._cleanup_cache()
         self._cleanup_failed_configs()
         stats = self.db.config_stats()
@@ -69,6 +60,9 @@ class BackgroundServiceRuntime:
         min_failures = max(1, int(self.settings.get("cleanup_min_failures", 5) or 5))
         max_age_hours = max(1, int(self.settings.get("cleanup_max_age_hours", 48) or 48))
         try:
+            purged = self.db.purge_remote_removed()
+            if purged > 0:
+                self.state.log("cleanup", f"Purged {purged} configs removed from processed GitHub list")
             removed = self.db.delete_failed_configs(min_failures=min_failures, max_age_hours=max_age_hours)
             if removed > 0:
                 self.state.log("cleanup", f"Removed {removed} failed configs from database")
@@ -91,6 +85,8 @@ class BackgroundServiceRuntime:
                 new_records=result.get("new_records", 0),
                 modified_records=result.get("modified_records", 0),
                 removed_records=result.get("removed_records", 0),
+                purged_records=result.get("purged_records", 0),
+                last_processed_update=result.get("processed_at", ""),
             )
             self.state.log(
                 "sync",
@@ -98,7 +94,8 @@ class BackgroundServiceRuntime:
                     "GitHub sync complete: "
                     f"{result.get('new_records', 0)} new, "
                     f"{result.get('modified_records', 0)} modified, "
-                    f"{result.get('removed_records', 0)} removed"
+                    f"{result.get('removed_records', 0)} removed, "
+                    f"{result.get('purged_records', 0)} purged"
                 ),
                 remote_version=result.get("remote_version", ""),
             )
@@ -106,69 +103,31 @@ class BackgroundServiceRuntime:
             self.state.write(status="Error", last_error=f"Sync failed: {exc}")
             self.state.log("sync_error", str(exc))
 
-    async def _health_check(self) -> None:
-        candidates = self._health_candidates()
-        if not candidates:
-            self.state.write(status="Running", last_health_check=utc_now())
-            return
-        self.state.write(status="Updating", last_error="")
-        limit = max(1, int(self.settings.get("service_validation_workers", self.settings.get("validation_workers", 4)) or 4))
-
-        def stage(config) -> None:
-            self.db.upsert_configs([config])
-
-        try:
-            checked = await self.health.check_many(candidates, limit=limit, stage_callback=stage)
-            self.db.upsert_configs(checked)
-            ready = sum(1 for item in checked if is_ready_status(item.status.value))
-            self.state.write(status="Running", last_health_check=utc_now(), last_health_ready=ready)
-            self.state.log("health", f"Checked {len(checked)} nodes, {ready} healthy")
-        except Exception as exc:
-            self.state.write(status="Error", last_error=f"Health check failed: {exc}")
-            self.state.log("health_error", str(exc))
-
-    def _health_candidates(self):
-        batch = max(1, int(self.settings.get("service_health_batch", 24) or 24))
-        max_age = int(self.settings.get("service_health_max_age_minutes", 60) or 60)
-        cutoff = datetime.now(UTC) - timedelta(minutes=max_age)
-        configs = self.db.list_configs(limit=1000)
-
-        def stale(item) -> bool:
-            if not item.last_check_at:
-                return True
-            try:
-                value = datetime.fromisoformat(item.last_check_at.replace("Z", "+00:00"))
-                return value < cutoff
-            except Exception:
-                return True
-
-        configs.sort(
-            key=lambda item: (
-                is_ready_status(item.status.value),
-                not stale(item),
-                item.ping_ms if item.ping_ms is not None else 999999,
-                -item.score,
-            )
-        )
-        return configs[:batch]
-
     def _cleanup_cache(self) -> None:
         max_mb = int(self.settings.get("cache_size_mb", 512) or 512)
         max_bytes = max_mb * 1024 * 1024
         cache = self.root / "cache"
         if not cache.exists():
             return
-        files = [path for path in cache.rglob("*") if path.is_file()]
-        total = sum(path.stat().st_size for path in files)
+        files: list[tuple[Path, int, float]] = []
+        total = 0
+        for path in cache.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            files.append((path, stat.st_size, stat.st_mtime))
+            total += stat.st_size
         if total <= max_bytes:
             return
         removable = sorted(
-            [path for path in files if "health-tests" in path.parts or "updates" in path.parts],
-            key=lambda item: item.stat().st_mtime,
+            [item for item in files if "health-tests" in item[0].parts or "updates" in item[0].parts],
+            key=lambda item: item[2],
         )
-        for path in removable:
+        for path, size, _mtime in removable:
             try:
-                size = path.stat().st_size
                 path.unlink()
                 total -= size
                 if total <= max_bytes:

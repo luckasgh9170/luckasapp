@@ -8,7 +8,7 @@ from typing import Iterable
 import orjson
 
 from models.dataset import DatasetRecord, DatasetVersion
-from models.config import ProxyConfig
+from models.config import ConfigStatus, ProxyConfig
 from services.config_details import extract_config_info
 from services.parser import extract_configs, stable_id
 
@@ -167,6 +167,8 @@ def canonical_record(
 
 
 def dataset_record_to_config(record: DatasetRecord) -> ProxyConfig:
+    status = _safe_status(record.status)
+    score = record.score or record.health or 0
     return ProxyConfig(
         id=record.id,
         protocol=record.protocol,
@@ -174,6 +176,15 @@ def dataset_record_to_config(record: DatasetRecord) -> ProxyConfig:
         name=record.remark or record.server,
         host=record.server,
         port=record.port,
+        country=record.country,
+        isp=record.isp,
+        ping_ms=record.ping,
+        status=status,
+        status_detail="Preprocessed by backend" if status != ConfigStatus.UNKNOWN else "",
+        last_check_at=record.last_check or record.updated_at,
+        success_count=1 if status in {ConfigStatus.HEALTHY, ConfigStatus.WORKING, ConfigStatus.ONLINE, ConfigStatus.SLOW} else 0,
+        failure_count=1 if status in {ConfigStatus.OFFLINE, ConfigStatus.TIMEOUT, ConfigStatus.INVALID, ConfigStatus.UNSTABLE} else 0,
+        score=float(score),
     )
 
 
@@ -227,3 +238,10 @@ def _same_week(value: str, year: int, week: int) -> bool:
         return iso.year == year and iso.week == week
     except Exception:
         return False
+
+
+def _safe_status(value: str) -> ConfigStatus:
+    try:
+        return ConfigStatus(value)
+    except Exception:
+        return ConfigStatus.UNKNOWN

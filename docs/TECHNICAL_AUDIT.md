@@ -22,14 +22,24 @@ Reviewed and hardened the VPN/proxy client architecture around connectivity, Git
 - Version cache writes are atomic.
 - Remote dataset sync now keeps a local index and detects added, modified and removed records.
 - Records removed from the GitHub distribution are marked offline with score `0` so they are excluded from recommendations and auto-connect.
+- Desktop sync now consumes only `distribution/data/servers.json` or `healthy.json`, which are preprocessed backend outputs.
 - Subscription collection uses the same API client and no longer creates one HTTP client per source.
-- Background service cleanup only removes old, non-favorite, repeatedly failing configs.
+- Background service no longer runs server health checks locally; it synchronizes processed server metadata every configured interval and maintains cache consistency.
+
+### Server Processing
+
+- Added backend-only server processing pipeline in `services/server_processing.py`.
+- Added `scripts/process_server_health.py` for scheduled validation, ranking and processed server publication.
+- Added GitHub Actions workflow `Process Healthy Servers` to run backend validation and commit `servers.json`, `healthy.json`, `server_metadata.json`, and distribution version metadata.
+- Processed server records include `ping`, `health`, `stability`, `score`, `status`, and `last_check`.
 
 ### Performance
 
 - Heavy connection config export no longer blocks QML/main thread.
 - GitHub distribution publishing from the desktop bridge now runs in a background worker.
-- GitHub sync, config parsing, validation and backend calls remain on background asyncio workers.
+- Client startup no longer triggers bulk ping, benchmarking, discovery, ranking or validation.
+- Desktop UI loads cached SQLite servers immediately and only performs lightweight connect-time verification for the selected node.
+- GitHub sync and backend calls remain on background asyncio workers.
 - HTTP connection pooling is centralized in `ApiClient`.
 
 ### Backend Reliability

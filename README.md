@@ -17,15 +17,15 @@ python main.py
 - Simplified premium VPN UI with working sidebar pages: Home, Scan, Servers, Favorites, Statistics, History and Settings
 - Large Quick Connect control, central SCAN action, modern cards, responsive layouts and live progress bar
 - GitHub-backed dataset metadata, 5-minute auto sync, auto-update check on startup, Update Now, Later and Skip Version actions
-- Native Windows background service for backend synchronization, local cache maintenance and health checks
+- Native Windows background service for processed server synchronization and local cache maintenance
 - GitHub dataset diffing for added, modified and removed records, with removed nodes excluded from recommendations
+- Backend/GitHub pipeline publishes `distribution/data/servers.json` with healthy servers, ping, score and last check metadata
 - Smart Connection Engine with ranked Quick Connect and post-connect DNS/TLS/route/outbound verification
 - Shared backend API client with retries, timeouts, circuit breaker and structured network logs
 - GitHub Actions workflows for CI, release packaging, changelog generation and version management
 - Async subscription collector and parser for `vmess`, `vless`, `trojan`, `ss`, `hysteria` and `tuic`
 - SQLite persistence via SQLAlchemy and local cache storage
-- YouTube reachability validation for `youtube.com` and `www.youtube.com`
-- Real-time validation queue with DNS, TCP, TLS/Reality hints, Xray runtime tests and immediate Ready-node connection
+- Client startup does not run bulk ping, benchmarking or server validation
 - Server cards with country, protocol, ping, score, status, Connect, Copy, Favorite and Details actions
 - Real Proxy Mode through Xray local SOCKS/HTTP inbounds
 - Smart Connect selects the highest-ranked Ready node
@@ -102,6 +102,28 @@ Install the Windows scheduled task after setting Telegram credentials:
 ```powershell
 .\scripts\install_telegram_sync_task.ps1
 ```
+
+## Backend server processing
+
+The desktop client consumes only preprocessed healthy servers:
+
+```text
+raw configs -> backend validation -> distribution/data/servers.json -> desktop sync -> SQLite/UI
+```
+
+Run backend processing locally from the existing validated cache:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\process_server_health.py --use-existing-cache --limit 1000
+```
+
+Run full backend validation over distribution records:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\process_server_health.py --workers 16 --timeout 8 --limit 1000
+```
+
+GitHub Actions workflow `Process Healthy Servers` runs on schedule and publishes `servers.json`, `healthy.json`, `server_metadata.json`, and updated distribution version metadata.
 
 ## Windows background service
 

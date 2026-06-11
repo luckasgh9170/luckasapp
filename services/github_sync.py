@@ -29,11 +29,13 @@ class GitHubDatasetClient:
                 return {
                     "remote_version": version.get("version", ""),
                     "previous_version": local_version.get("version", ""),
-                    "records": int(version.get("records", version.get("total_items", 0)) or 0),
+                    "records": int(version.get("processed_servers", version.get("records", version.get("total_items", 0))) or 0),
                     "new_records": 0,
                     "modified_records": 0,
                     "removed_records": 0,
+                    "purged_records": 0,
                     "updated": version.get("updated", ""),
+                    "processed_at": version.get("processed_at", ""),
                     "skipped": True,
                 }
             records = await self._fetch_records(client)
@@ -41,7 +43,8 @@ class GitHubDatasetClient:
         diff = self._diff_records(records)
         db = Database(self.root)
         added = db.upsert_configs(configs)
-        removed = db.mark_remote_removed(set(diff["removed_ids"]))
+        removed = db.prune_to_processed({record.id for record in records})
+        purged = db.purge_remote_removed()
         _atomic_write_json(self.version_cache, version)
         _atomic_write_json(self.index_cache, self._build_index(records, version))
         HistoryStore(self.root).add(
@@ -53,6 +56,7 @@ class GitHubDatasetClient:
                 "new_records": added,
                 "modified_records": diff["modified_records"],
                 "removed_records": removed,
+                "purged_records": purged,
             },
         )
         return {
@@ -62,7 +66,9 @@ class GitHubDatasetClient:
             "new_records": added,
             "modified_records": diff["modified_records"],
             "removed_records": removed,
+            "purged_records": purged,
             "updated": version.get("updated", ""),
+            "processed_at": version.get("processed_at", ""),
             "skipped": False,
         }
 
@@ -122,8 +128,8 @@ class GitHubDatasetClient:
 
     async def _fetch_records(self, client: ApiClient) -> list[DatasetRecord]:
         urls = [
-            f"{self.base_url}/data/latest.json",
-            f"{self.base_url}/data/latest/latest.json",
+            f"{self.base_url}/data/servers.json",
+            f"{self.base_url}/data/healthy.json",
         ]
         last_error: Exception | None = None
         for url in urls:
@@ -134,15 +140,25 @@ class GitHubDatasetClient:
                 return [DatasetRecord(**item) for item in payload]
             except Exception as exc:
                 last_error = exc
-        raise RuntimeError(f"Could not download GitHub dataset: {last_error}")
+        raise RuntimeError(
+            "Processed server list is unavailable. "
+            f"Backend pipeline must publish distribution/data/servers.json: {last_error}"
+        )
 
     @staticmethod
     def _same_version(local: dict, remote: dict) -> bool:
         local_version = str(local.get("version", ""))
         remote_version = str(remote.get("version", ""))
-        local_records = int(local.get("records", local.get("total_items", 0)) or 0)
-        remote_records = int(remote.get("records", remote.get("total_items", 0)) or 0)
-        return bool(local_version) and local_version == remote_version and local_records == remote_records
+        local_records = int(local.get("processed_servers", local.get("records", local.get("total_items", 0))) or 0)
+        remote_records = int(remote.get("processed_servers", remote.get("records", remote.get("total_items", 0))) or 0)
+        local_processed = str(local.get("processed_at", ""))
+        remote_processed = str(remote.get("processed_at", ""))
+        return (
+            bool(local_version)
+            and local_version == remote_version
+            and local_records == remote_records
+            and local_processed == remote_processed
+        )
 
 
 def _record_key(record: DatasetRecord) -> str:
