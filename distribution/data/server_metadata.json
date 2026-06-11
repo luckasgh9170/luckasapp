@@ -1,9 +1,9 @@
 {
-  "updated": "2026-06-11T11:41:10Z",
-  "source": "local-cache",
-  "input_configs": 2,
-  "processed_servers": 2,
-  "healthy_servers": 2,
+  "updated": "2026-06-11T20:41:18Z",
+  "source": "backend-validation",
+  "input_configs": 1000,
+  "processed_servers": 12,
+  "healthy_servers": 12,
   "status": "ready",
   "ranking": [
     "health",

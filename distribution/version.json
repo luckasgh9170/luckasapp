@@ -5,7 +5,7 @@
   "total_items": 18112,
   "new_records": 0,
   "new_items": 0,
-  "processed_at": "2026-06-11T11:41:10Z",
-  "processed_servers": 2,
+  "processed_at": "2026-06-11T20:41:18Z",
+  "processed_servers": 12,
   "server_list": "data/servers.json"
 }
