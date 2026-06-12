@@ -1,9 +1,9 @@
 {
-  "updated": "2026-06-12T05:09:52Z",
+  "updated": "2026-06-12T10:46:02Z",
   "source": "backend-validation",
   "input_configs": 1000,
-  "processed_servers": 17,
-  "healthy_servers": 17,
+  "processed_servers": 12,
+  "healthy_servers": 12,
   "status": "ready",
   "ranking": [
     "health",
