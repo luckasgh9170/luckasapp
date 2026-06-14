@@ -35,10 +35,11 @@ class BackgroundServiceRuntime:
             self.state.log("service", "Background service stopped")
 
     async def run_once(self) -> None:
-        self.state.write(status="Running", last_error="")
+        previous = self.state.read()
+        self.state.write(status="Updating", last_error="")
         await self._sync_backend(force=True)
         self._cleanup_cache()
-        self.state.write(status="Stopped")
+        self.state.write(status="Running" if previous.get("status") == "Running" else "Stopped")
 
     async def run_cycle(self) -> None:
         now = time.monotonic()

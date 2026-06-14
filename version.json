@@ -1,8 +1,8 @@
 {
-  "version": "1.3.1",
-  "build": 106,
-  "updated_at": "2026-06-11T11:50:07Z",
-  "release_notes": "Patch processed-server sync state cleanup and GitHub raw metadata robustness.",
+  "version": "1.3.2",
+  "build": 107,
+  "updated_at": "2026-06-14T09:17:10Z",
+  "release_notes": "Full architecture audit plus runtime fixes: runner shutdown, core process lifecycle cleanup, one-shot service state preservation, and automatic fallback to free local inbound ports when configured ports are busy.",
   "owner": "luckasgh9170",
   "repository": "luckasapp",
   "download_url": "https://github.com/luckasgh9170/luckasapp/releases/latest/download/LuckasApp-windows.zip",

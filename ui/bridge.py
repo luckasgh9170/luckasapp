@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,8 @@ class AppBridge(QObject):
         self._progress_detail = ""
         self._current_server = "Disconnected"
         self._current_config_id = ""
+        self._active_socks_port = int(self.settings.get("socks_port", 10808))
+        self._active_http_port = int(self.settings.get("http_port", 10809))
         self._connection_state = "Disconnected"
         self._connection_mode = "disconnected"
         self._proxy_status = "disabled"
@@ -195,6 +198,13 @@ class AppBridge(QObject):
             self._diagnostics["connection_status"] = value
             self.connectionModeChanged.emit()
 
+    @Slot()
+    def shutdown(self) -> None:
+        try:
+            self.runner.close()
+        except Exception:
+            pass
+
     def _sample_traffic(self) -> None:
         self._traffic_snapshot = self.traffic.sample()
         self.trafficChanged.emit()
@@ -230,6 +240,14 @@ class AppBridge(QObject):
             self._sync_timer.start()
         else:
             self._sync_timer.stop()
+
+    def _resolve_local_port(self, preferred: int, *, enabled: bool, exclude: set[int] | None = None) -> int | None:
+        if not enabled:
+            return None
+        exclude = exclude or set()
+        if preferred > 0 and preferred not in exclude and _is_port_available(preferred):
+            return preferred
+        return _free_port(exclude | ({preferred} if preferred > 0 else set()))
 
     @Slot(result="QVariantList")
     def configList(self) -> list[dict]:
@@ -603,7 +621,17 @@ class AppBridge(QObject):
         self._set_busy(True)
         self._start_progress(f"Connecting {mode.upper()}", 0, config.name)
         self._current_config_id = config.id
-        http_port = int(self.settings.get("http_port", 10809))
+        socks_port = self._resolve_local_port(
+            int(self.settings.get("socks_port", 10808)),
+            enabled=bool(self.settings.get("enable_socks", True)),
+        )
+        http_port = self._resolve_local_port(
+            int(self.settings.get("http_port", 10809)),
+            enabled=bool(self.settings.get("enable_http", True)),
+            exclude={socks_port} if socks_port is not None else set(),
+        )
+        self._active_socks_port = socks_port or 0
+        self._active_http_port = http_port or 0
         config_to_try = config
 
         async def start_and_verify() -> dict:
@@ -611,8 +639,8 @@ class AppBridge(QObject):
                 config_path = export_xray_config(
                     config,
                     self.root / "cache" / "active-xray.json",
-                    socks_port=int(self.settings.get("socks_port", 10808)) if self.settings.get("enable_socks", True) else None,
-                    http_port=http_port if self.settings.get("enable_http", True) else None,
+                    socks_port=socks_port,
+                    http_port=http_port,
                     dns_server=str(self.settings.get("dns_server", "1.1.1.1")),
                     prefer_ipv6=bool(self.settings.get("ipv6", False)),
                 )
@@ -654,7 +682,7 @@ class AppBridge(QObject):
                     self._set_connection_mode(mode)
                     self._set_connection_state("Connected")
                     self._proxy_status = "enabled" if mode in {"proxy", "smart"} else self._proxy_status
-                    if self.settings.get("set_system_proxy_on_connect", False):
+                    if self.settings.get("set_system_proxy_on_connect", False) and http_port is not None:
                         self.proxy.set_mode("proxy", "127.0.0.1", http_port)
                     self.connectionModeChanged.emit()
                     self.traffic.start_session()
@@ -743,6 +771,8 @@ class AppBridge(QObject):
                 self._set_connection_mode("disconnected")
                 self._set_connection_state("Disconnected")
                 self._proxy_status = "disabled"
+                self._active_socks_port = int(self.settings.get("socks_port", 10808))
+                self._active_http_port = int(self.settings.get("http_port", 10809))
                 if self.settings.get("set_system_proxy_on_connect", False):
                     self.proxy.disable()
                 self.traffic.stop_session()
@@ -766,7 +796,8 @@ class AppBridge(QObject):
 
     @Slot(str)
     def setProxyMode(self, mode: str) -> None:
-        self.notification.emit(self.proxy.set_mode(mode, "127.0.0.1", int(self.settings.get("http_port", 10809))))
+        port = self._active_http_port or int(self.settings.get("http_port", 10809))
+        self.notification.emit(self.proxy.set_mode(mode, "127.0.0.1", port))
 
     @Slot(str)
     def runNetworkTool(self, tool: str) -> None:
@@ -913,3 +944,23 @@ def _smart_rank_key(config) -> tuple:
     success_rate = config.success_count / total if total else 1.0
     ping = config.ping_ms if config.ping_ms is not None else 999999
     return (-float(config.score), ping, -success_rate, config.last_check_at or "")
+
+
+def _is_port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def _free_port(exclude: set[int] | None = None) -> int:
+    exclude = exclude or set()
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if port not in exclude:
+            return port

@@ -42,6 +42,7 @@ def main() -> int:
     bridge = AppBridge(ROOT)
     engine.rootContext().setContextProperty("appBridge", bridge)
     engine.load(QUrl.fromLocalFile(str(ROOT / "ui" / "Main.qml")))
+    app.aboutToQuit.connect(bridge.shutdown)
 
     if not engine.rootObjects():
         return 1
